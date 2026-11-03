@@ -55,8 +55,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	statements := []string{
 		`PRAGMA foreign_keys = ON;`,
 		`PRAGMA journal_mode = WAL;`,
+		`CREATE TABLE IF NOT EXISTS users (
+			uid INTEGER PRIMARY KEY,
+			username TEXT NOT NULL DEFAULT '',
+			cookie TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_uid INTEGER NOT NULL DEFAULT 0,
 			name TEXT NOT NULL,
 			cookie TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'missing_cookie',
@@ -76,6 +84,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS notifications (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_uid INTEGER NOT NULL DEFAULT 0,
 			name TEXT NOT NULL,
 			provider TEXT NOT NULL,
 			config TEXT NOT NULL DEFAULT '{}',
@@ -88,6 +97,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS proxy_groups (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_uid INTEGER NOT NULL DEFAULT 0,
 			name TEXT NOT NULL,
 			type TEXT NOT NULL DEFAULT 'static',
 			api_provider TEXT NOT NULL DEFAULT '',
@@ -121,6 +131,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_uid INTEGER NOT NULL DEFAULT 0,
 			name TEXT NOT NULL,
 			account_id INTEGER NOT NULL DEFAULT 0,
 			proxy_group_id INTEGER NOT NULL DEFAULT 0,
@@ -171,12 +182,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id INTEGER NOT NULL DEFAULT 0,
+			owner_uid INTEGER NOT NULL DEFAULT 0,
 			level TEXT NOT NULL,
 			message TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS bws_tasks (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				owner_uid INTEGER NOT NULL DEFAULT 0,
 				name TEXT NOT NULL,
 				account_id INTEGER NOT NULL DEFAULT 0,
 				proxy_group_id INTEGER NOT NULL DEFAULT 0,
@@ -204,6 +217,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS bws_task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id INTEGER NOT NULL DEFAULT 0,
+			owner_uid INTEGER NOT NULL DEFAULT 0,
 			level TEXT NOT NULL,
 			message TEXT NOT NULL,
 			created_at TEXT NOT NULL
@@ -245,10 +259,118 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "proxy_nodes", "last_test_ip_location", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "accounts", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "notifications", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "proxy_groups", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "tasks", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "bws_tasks", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "task_logs", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "bws_task_logs", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.rebuildTicketProjectHistory(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (s *Store) SessionSummary(ctx context.Context) (model.SessionSummary, error) {
+func (s *Store) rebuildTicketProjectHistory(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(ticket_project_history)`)
+	if err != nil {
+		return err
+	}
+	hasOwnerColumn := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "owner_uid" {
+			hasOwnerColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if hasOwnerColumn {
+		return nil
+	}
+
+	statements := []string{
+		`ALTER TABLE ticket_project_history RENAME TO ticket_project_history_legacy;`,
+		`CREATE TABLE ticket_project_history (
+			owner_uid INTEGER NOT NULL DEFAULT 0,
+			project_id INTEGER NOT NULL,
+			project_name TEXT NOT NULL DEFAULT '',
+			venue_name TEXT NOT NULL DEFAULT '',
+			venue_address TEXT NOT NULL DEFAULT '',
+			start_at TEXT NOT NULL DEFAULT '',
+			end_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (owner_uid, project_id)
+		);`,
+		`INSERT INTO ticket_project_history (owner_uid, project_id, project_name, venue_name, venue_address, start_at, end_at, created_at, updated_at)
+			SELECT 0, project_id, project_name, venue_name, venue_address, start_at, end_at, created_at, updated_at
+			FROM ticket_project_history_legacy;`,
+		`DROP TABLE ticket_project_history_legacy;`,
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) UpsertUser(ctx context.Context, uid int64, username string, cookie string) error {
+	now := nowText()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO users (uid, username, cookie, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(uid) DO UPDATE SET
+			username = excluded.username,
+			cookie = excluded.cookie,
+			updated_at = excluded.updated_at
+	`, uid, strings.TrimSpace(username), strings.TrimSpace(cookie), now, now)
+	return err
+}
+
+func (s *Store) GetUser(ctx context.Context, uid int64) (int64, string, error) {
+	var userUID int64
+	var username string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT uid, username
+		FROM users
+		WHERE uid = ?
+	`, uid).Scan(&userUID, &username)
+	if err != nil {
+		return 0, "", err
+	}
+	return userUID, username, nil
+}
+
+func (s *Store) SessionSummary(ctx context.Context, ownerUID int64) (model.SessionSummary, error) {
 	var summary model.SessionSummary
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -256,7 +378,8 @@ func (s *Store) SessionSummary(ctx context.Context) (model.SessionSummary, error
 			COALESCE(SUM(CASE WHEN cookie <> '' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'logged_in' THEN 1 ELSE 0 END), 0)
 		FROM accounts
-	`).Scan(&summary.AccountCount, &summary.ConfiguredAccounts, &summary.VerifiedAccounts)
+		WHERE owner_uid = ?
+	`, ownerUID).Scan(&summary.AccountCount, &summary.ConfiguredAccounts, &summary.VerifiedAccounts)
 	if err != nil {
 		return model.SessionSummary{}, err
 	}
@@ -275,12 +398,13 @@ func (s *Store) SessionSummary(ctx context.Context) (model.SessionSummary, error
 	return summary, nil
 }
 
-func (s *Store) ListAccounts(ctx context.Context) ([]model.Account, error) {
+func (s *Store) ListAccounts(ctx context.Context, ownerUID int64) ([]model.Account, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, cookie, status, note, created_at, updated_at
+		SELECT id, owner_uid, name, cookie, status, note, created_at, updated_at
 		FROM accounts
+		WHERE owner_uid = ?
 		ORDER BY updated_at DESC, id DESC
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +414,7 @@ func (s *Store) ListAccounts(ctx context.Context) ([]model.Account, error) {
 	for rows.Next() {
 		var account model.Account
 		var cookie string
-		if err := rows.Scan(&account.ID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt); err != nil {
+		if err := rows.Scan(&account.ID, &account.OwnerUID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt); err != nil {
 			return nil, err
 		}
 		account.HasCookie = cookie != ""
@@ -301,19 +425,19 @@ func (s *Store) ListAccounts(ctx context.Context) ([]model.Account, error) {
 	return accounts, rows.Err()
 }
 
-func (s *Store) CreateAccount(ctx context.Context, input model.AccountInput) (model.Account, error) {
-	return s.CreateAccountWithStatus(ctx, input, accountStatus(input.Cookie))
+func (s *Store) CreateAccount(ctx context.Context, ownerUID int64, input model.AccountInput) (model.Account, error) {
+	return s.CreateAccountWithStatus(ctx, ownerUID, input, accountStatus(input.Cookie))
 }
 
-func (s *Store) CreateAccountWithStatus(ctx context.Context, input model.AccountInput, status string) (model.Account, error) {
+func (s *Store) CreateAccountWithStatus(ctx context.Context, ownerUID int64, input model.AccountInput, status string) (model.Account, error) {
 	now := nowText()
 	if status == "" {
 		status = accountStatus(input.Cookie)
 	}
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO accounts (name, cookie, status, note, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, strings.TrimSpace(input.Name), strings.TrimSpace(input.Cookie), status, strings.TrimSpace(input.Note), now, now)
+		INSERT INTO accounts (owner_uid, name, cookie, status, note, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, ownerUID, strings.TrimSpace(input.Name), strings.TrimSpace(input.Cookie), status, strings.TrimSpace(input.Note), now, now)
 	if err != nil {
 		return model.Account{}, err
 	}
@@ -323,6 +447,34 @@ func (s *Store) CreateAccountWithStatus(ctx context.Context, input model.Account
 		return model.Account{}, err
 	}
 	return s.GetAccount(ctx, id)
+}
+
+func (s *Store) GetAccountByOwner(ctx context.Context, ownerUID int64) (model.Account, error) {
+	var account model.Account
+	var cookie string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, owner_uid, name, cookie, status, note, created_at, updated_at
+		FROM accounts
+		WHERE owner_uid = ?
+		ORDER BY id ASC
+		LIMIT 1
+	`, ownerUID).Scan(&account.ID, &account.OwnerUID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		return model.Account{}, err
+	}
+	account.HasCookie = cookie != ""
+	account.CookiePreview = maskCookie(cookie)
+	return account, nil
+}
+
+func (s *Store) GetAccountOwnerUID(ctx context.Context, id int64) (int64, error) {
+	var ownerUID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT owner_uid
+		FROM accounts
+		WHERE id = ?
+	`, id).Scan(&ownerUID)
+	return ownerUID, err
 }
 
 func (s *Store) ExportAccount(ctx context.Context, id int64) (model.AccountExportItem, error) {
@@ -338,9 +490,16 @@ func (s *Store) ExportAccount(ctx context.Context, id int64) (model.AccountExpor
 	return account, nil
 }
 
-func (s *Store) ExportAccounts(ctx context.Context, ids []int64) ([]model.AccountExportItem, error) {
+func (s *Store) ExportAccounts(ctx context.Context, ownerUID int64, ids []int64) ([]model.AccountExportItem, error) {
 	accounts := make([]model.AccountExportItem, 0, len(ids))
 	for _, id := range ids {
+		accountOwnerUID, err := s.GetAccountOwnerUID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if accountOwnerUID != ownerUID {
+			return nil, sql.ErrNoRows
+		}
 		account, err := s.ExportAccount(ctx, id)
 		if err != nil {
 			return nil, err
@@ -350,8 +509,8 @@ func (s *Store) ExportAccounts(ctx context.Context, ids []int64) ([]model.Accoun
 	return accounts, nil
 }
 
-func (s *Store) ImportAccount(ctx context.Context, input model.AccountExportItem) (model.Account, error) {
-	accounts, err := s.ImportAccounts(ctx, []model.AccountExportItem{input})
+func (s *Store) ImportAccount(ctx context.Context, ownerUID int64, input model.AccountExportItem) (model.Account, error) {
+	accounts, err := s.ImportAccounts(ctx, ownerUID, []model.AccountExportItem{input})
 	if err != nil {
 		return model.Account{}, err
 	}
@@ -361,7 +520,7 @@ func (s *Store) ImportAccount(ctx context.Context, input model.AccountExportItem
 	return accounts[0], nil
 }
 
-func (s *Store) ImportAccounts(ctx context.Context, inputs []model.AccountExportItem) ([]model.Account, error) {
+func (s *Store) ImportAccounts(ctx context.Context, ownerUID int64, inputs []model.AccountExportItem) ([]model.Account, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -376,9 +535,9 @@ func (s *Store) ImportAccounts(ctx context.Context, inputs []model.AccountExport
 		note := strings.TrimSpace(input.Note)
 		status := accountStatus(cookie)
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO accounts (name, cookie, status, note, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, name, cookie, status, note, now, now)
+			INSERT INTO accounts (owner_uid, name, cookie, status, note, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, ownerUID, name, cookie, status, note, now, now)
 		if err != nil {
 			return nil, err
 		}
@@ -388,6 +547,7 @@ func (s *Store) ImportAccounts(ctx context.Context, inputs []model.AccountExport
 		}
 		accounts = append(accounts, model.Account{
 			ID:            id,
+			OwnerUID:      ownerUID,
 			Name:          name,
 			CookiePreview: maskCookie(cookie),
 			HasCookie:     cookie != "",
@@ -407,10 +567,10 @@ func (s *Store) GetAccountCookie(ctx context.Context, id int64) (model.Account, 
 	var account model.Account
 	var cookie string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, cookie, status, note, created_at, updated_at
+		SELECT id, owner_uid, name, cookie, status, note, created_at, updated_at
 		FROM accounts
 		WHERE id = ?
-	`, id).Scan(&account.ID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt)
+	`, id).Scan(&account.ID, &account.OwnerUID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt)
 	if err != nil {
 		return model.Account{}, "", err
 	}
@@ -423,10 +583,10 @@ func (s *Store) GetAccount(ctx context.Context, id int64) (model.Account, error)
 	var account model.Account
 	var cookie string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, cookie, status, note, created_at, updated_at
+		SELECT id, owner_uid, name, cookie, status, note, created_at, updated_at
 		FROM accounts
 		WHERE id = ?
-	`, id).Scan(&account.ID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt)
+	`, id).Scan(&account.ID, &account.OwnerUID, &account.Name, &cookie, &account.Status, &account.Note, &account.CreatedAt, &account.UpdatedAt)
 	if err != nil {
 		return model.Account{}, err
 	}
@@ -478,13 +638,14 @@ func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 	return err
 }
 
-func (s *Store) ListTicketProjectHistory(ctx context.Context) ([]model.TicketProjectHistory, error) {
+func (s *Store) ListTicketProjectHistory(ctx context.Context, ownerUID int64) ([]model.TicketProjectHistory, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT project_id, project_name, venue_name, venue_address, start_at, end_at, updated_at
 		FROM ticket_project_history
+		WHERE owner_uid = ?
 		ORDER BY updated_at DESC, project_id DESC
 		LIMIT 50
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -501,28 +662,29 @@ func (s *Store) ListTicketProjectHistory(ctx context.Context) ([]model.TicketPro
 	return history, rows.Err()
 }
 
-func (s *Store) UpsertTicketProjectHistory(ctx context.Context, project model.TicketProject) error {
+func (s *Store) UpsertTicketProjectHistory(ctx context.Context, ownerUID int64, project model.TicketProject) error {
 	now := nowText()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO ticket_project_history (project_id, project_name, venue_name, venue_address, start_at, end_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(project_id) DO UPDATE SET
+		INSERT INTO ticket_project_history (owner_uid, project_id, project_name, venue_name, venue_address, start_at, end_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(owner_uid, project_id) DO UPDATE SET
 			project_name = excluded.project_name,
 			venue_name = excluded.venue_name,
 			venue_address = excluded.venue_address,
 			start_at = excluded.start_at,
 			end_at = excluded.end_at,
 			updated_at = excluded.updated_at
-	`, project.ProjectID, strings.TrimSpace(project.ProjectName), strings.TrimSpace(project.VenueName), strings.TrimSpace(project.VenueAddress), strings.TrimSpace(project.StartAt), strings.TrimSpace(project.EndAt), now, now)
+	`, ownerUID, project.ProjectID, strings.TrimSpace(project.ProjectName), strings.TrimSpace(project.VenueName), strings.TrimSpace(project.VenueAddress), strings.TrimSpace(project.StartAt), strings.TrimSpace(project.EndAt), now, now)
 	return err
 }
 
-func (s *Store) ListNotifications(ctx context.Context) ([]model.Notification, error) {
+func (s *Store) ListNotifications(ctx context.Context, ownerUID int64) ([]model.Notification, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, provider, config, enabled, last_test_status, last_test_message, last_tested_at, created_at, updated_at
+		SELECT id, owner_uid, name, provider, config, enabled, last_test_status, last_test_message, last_tested_at, created_at, updated_at
 		FROM notifications
+		WHERE owner_uid = ?
 		ORDER BY updated_at DESC, id DESC
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -539,13 +701,13 @@ func (s *Store) ListNotifications(ctx context.Context) ([]model.Notification, er
 	return notifications, rows.Err()
 }
 
-func (s *Store) ListEnabledNotifications(ctx context.Context) ([]model.Notification, error) {
+func (s *Store) ListEnabledNotifications(ctx context.Context, ownerUID int64) ([]model.Notification, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, provider, config, enabled, last_test_status, last_test_message, last_tested_at, created_at, updated_at
+		SELECT id, owner_uid, name, provider, config, enabled, last_test_status, last_test_message, last_tested_at, created_at, updated_at
 		FROM notifications
-		WHERE enabled = 1
+		WHERE enabled = 1 AND owner_uid = ?
 		ORDER BY updated_at DESC, id DESC
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -562,7 +724,7 @@ func (s *Store) ListEnabledNotifications(ctx context.Context) ([]model.Notificat
 	return notifications, rows.Err()
 }
 
-func (s *Store) CreateNotification(ctx context.Context, input model.NotificationInput) (model.Notification, error) {
+func (s *Store) CreateNotification(ctx context.Context, ownerUID int64, input model.NotificationInput) (model.Notification, error) {
 	now := nowText()
 	input = normalizeNotificationInput(input)
 	config, err := marshalJSON(input.Config, "{}")
@@ -570,9 +732,9 @@ func (s *Store) CreateNotification(ctx context.Context, input model.Notification
 		return model.Notification{}, err
 	}
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO notifications (name, provider, config, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 0, ?, ?)
-	`, strings.TrimSpace(input.Name), input.Provider, config, now, now)
+		INSERT INTO notifications (owner_uid, name, provider, config, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 0, ?, ?)
+	`, ownerUID, strings.TrimSpace(input.Name), input.Provider, config, now, now)
 	if err != nil {
 		return model.Notification{}, err
 	}
@@ -586,12 +748,22 @@ func (s *Store) CreateNotification(ctx context.Context, input model.Notification
 func (s *Store) GetNotification(ctx context.Context, id int64) (model.Notification, error) {
 	var notification model.Notification
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, provider, config, enabled, last_test_status, last_test_message, last_tested_at, created_at, updated_at
+		SELECT id, owner_uid, name, provider, config, enabled, last_test_status, last_test_message, last_tested_at, created_at, updated_at
 		FROM notifications
 		WHERE id = ?
 	`, id)
 	err := scanNotification(row, &notification)
 	return notification, err
+}
+
+func (s *Store) GetNotificationOwnerUID(ctx context.Context, id int64) (int64, error) {
+	var ownerUID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT owner_uid
+		FROM notifications
+		WHERE id = ?
+	`, id).Scan(&ownerUID)
+	return ownerUID, err
 }
 
 func (s *Store) UpdateNotification(ctx context.Context, id int64, input model.NotificationInput) (model.Notification, error) {
@@ -642,10 +814,10 @@ func (s *Store) SetNotificationTestResult(ctx context.Context, id int64, status 
 	return s.GetNotification(ctx, id)
 }
 
-func (s *Store) ListProxyGroups(ctx context.Context) ([]model.ProxyGroup, error) {
+func (s *Store) ListProxyGroups(ctx context.Context, ownerUID int64) ([]model.ProxyGroup, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			pg.id, pg.name, pg.type, pg.api_provider, pg.api_config,
+			pg.id, pg.owner_uid, pg.name, pg.type, pg.api_provider, pg.api_config,
 			pg.last_pull_status, pg.last_pull_message, pg.last_pulled_at,
 			pg.last_test_status, pg.last_test_message, pg.last_tested_at,
 			COUNT(DISTINCT pn.id),
@@ -656,9 +828,10 @@ func (s *Store) ListProxyGroups(ctx context.Context) ([]model.ProxyGroup, error)
 			LEFT JOIN proxy_nodes pn ON pn.group_id = pg.id
 			LEFT JOIN tasks t ON t.proxy_group_id = pg.id
 			LEFT JOIN bws_tasks bt ON bt.proxy_group_id = pg.id
+			WHERE pg.owner_uid = ?
 			GROUP BY pg.id
 			ORDER BY pg.updated_at DESC, pg.id DESC
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -679,7 +852,7 @@ func (s *Store) GetProxyGroup(ctx context.Context, id int64) (model.ProxyGroup, 
 	var group model.ProxyGroup
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
-			pg.id, pg.name, pg.type, pg.api_provider, pg.api_config,
+			pg.id, pg.owner_uid, pg.name, pg.type, pg.api_provider, pg.api_config,
 			pg.last_pull_status, pg.last_pull_message, pg.last_pulled_at,
 			pg.last_test_status, pg.last_test_message, pg.last_tested_at,
 			COUNT(DISTINCT pn.id),
@@ -697,7 +870,17 @@ func (s *Store) GetProxyGroup(ctx context.Context, id int64) (model.ProxyGroup, 
 	return group, err
 }
 
-func (s *Store) CreateProxyGroup(ctx context.Context, input model.ProxyGroupInput) (model.ProxyGroup, error) {
+func (s *Store) GetProxyGroupOwnerUID(ctx context.Context, id int64) (int64, error) {
+	var ownerUID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT owner_uid
+		FROM proxy_groups
+		WHERE id = ?
+	`, id).Scan(&ownerUID)
+	return ownerUID, err
+}
+
+func (s *Store) CreateProxyGroup(ctx context.Context, ownerUID int64, input model.ProxyGroupInput) (model.ProxyGroup, error) {
 	now := nowText()
 	input = normalizeProxyGroupInput(input)
 	config, err := marshalJSON(input.APIConfig, "{}")
@@ -705,9 +888,9 @@ func (s *Store) CreateProxyGroup(ctx context.Context, input model.ProxyGroupInpu
 		return model.ProxyGroup{}, err
 	}
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO proxy_groups (name, type, api_provider, api_config, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, strings.TrimSpace(input.Name), input.Type, input.APIProvider, config, now, now)
+		INSERT INTO proxy_groups (owner_uid, name, type, api_provider, api_config, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, ownerUID, strings.TrimSpace(input.Name), input.Type, input.APIProvider, config, now, now)
 	if err != nil {
 		return model.ProxyGroup{}, err
 	}
@@ -794,6 +977,17 @@ func (s *Store) GetProxyNode(ctx context.Context, id int64) (model.ProxyNode, er
 	`, id)
 	err := scanProxyNode(row, &node)
 	return node, err
+}
+
+func (s *Store) GetProxyNodeOwnerUID(ctx context.Context, id int64) (int64, error) {
+	var ownerUID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT pg.owner_uid
+		FROM proxy_nodes pn
+		JOIN proxy_groups pg ON pg.id = pn.group_id
+		WHERE pn.id = ?
+	`, id).Scan(&ownerUID)
+	return ownerUID, err
 }
 
 func (s *Store) CreateProxyNode(ctx context.Context, groupID int64, input model.ProxyNodeInput) (model.ProxyNode, error) {
@@ -904,10 +1098,10 @@ func (s *Store) ClearProxyGroupTestResult(ctx context.Context, id int64) (model.
 	return s.GetProxyGroup(ctx, id)
 }
 
-func (s *Store) ListTasks(ctx context.Context) ([]model.Task, error) {
+func (s *Store) ListTasks(ctx context.Context, ownerUID int64) ([]model.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			t.id, t.name, t.account_id, COALESCE(a.name, ''), t.proxy_group_id, COALESCE(pg.name, ''), t.proxy_mode, t.super_mode, t.super_mode_base,
+			t.id, t.owner_uid, t.name, t.account_id, COALESCE(a.name, ''), t.proxy_group_id, COALESCE(pg.name, ''), t.proxy_mode, t.super_mode, t.super_mode_base,
 			t.project_id, t.project_name, t.screen_id, t.sku_id,
 			t.session_name, t.ticket_level, t.ticket_display, t.ticket_price,
 				t.sale_start, t.sale_status, t.link_id, t.is_hot_project,
@@ -921,8 +1115,9 @@ func (s *Store) ListTasks(ctx context.Context) ([]model.Task, error) {
 		FROM tasks t
 		LEFT JOIN accounts a ON a.id = t.account_id
 		LEFT JOIN proxy_groups pg ON pg.id = t.proxy_group_id
+		WHERE t.owner_uid = ?
 		ORDER BY t.updated_at DESC, t.id DESC
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -940,7 +1135,7 @@ func (s *Store) ListTasks(ctx context.Context) ([]model.Task, error) {
 	return tasks, rows.Err()
 }
 
-func (s *Store) CreateTask(ctx context.Context, input model.TaskInput) (model.Task, error) {
+func (s *Store) CreateTask(ctx context.Context, ownerUID int64, input model.TaskInput) (model.Task, error) {
 	now := nowText()
 	input = normalizeTaskInput(input)
 	buyerInfo, err := marshalJSON(input.BuyerInfo, "[]")
@@ -957,7 +1152,7 @@ func (s *Store) CreateTask(ctx context.Context, input model.TaskInput) (model.Ta
 	}
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO tasks (
-			name, account_id, proxy_group_id, proxy_mode, super_mode, super_mode_base, project_id, project_name, screen_id, sku_id,
+			owner_uid, name, account_id, proxy_group_id, proxy_mode, super_mode, super_mode_base, project_id, project_name, screen_id, sku_id,
 				session_name, ticket_level, ticket_display, ticket_price,
 				sale_start, sale_status, link_id, is_hot_project,
 				task_mode, duration_mode, selected_tickets, rush_duration_seconds,
@@ -966,8 +1161,8 @@ func (s *Store) CreateTask(ctx context.Context, input model.TaskInput) (model.Ta
 			quantity, start_at, end_at, poll_interval_ms, rush_poll_interval_ms, restock_poll_interval_ms,
 			status, last_message, created_at, updated_at
 		)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', '任务已创建，等待下发。', ?, ?)
-		`, strings.TrimSpace(input.Name), input.AccountID, input.ProxyGroupID, input.ProxyMode, boolToInt(input.SuperMode), input.SuperModeBase, input.ProjectID, strings.TrimSpace(input.ProjectName), input.ScreenID, input.SKUID, strings.TrimSpace(input.SessionName), strings.TrimSpace(input.TicketLevel), strings.TrimSpace(input.TicketDisplay), input.TicketPrice, strings.TrimSpace(input.SaleStart), strings.TrimSpace(input.SaleStatus), input.LinkID, boolToInt(input.IsHotProject), input.TaskMode, input.DurationMode, selectedTickets, input.RushDurationSeconds, input.OrderType, input.PayMoney, buyerInfo, strings.TrimSpace(input.Buyer), strings.TrimSpace(input.Tel), deliverInfo, strings.TrimSpace(input.Phone), input.TimeSyncStrategy, input.Quantity, strings.TrimSpace(input.StartAt), strings.TrimSpace(input.EndAt), input.PollIntervalMillis, input.RushPollIntervalMillis, input.RestockPollIntervalMillis, now, now)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', '任务已创建，等待下发。', ?, ?)
+		`, ownerUID, strings.TrimSpace(input.Name), input.AccountID, input.ProxyGroupID, input.ProxyMode, boolToInt(input.SuperMode), input.SuperModeBase, input.ProjectID, strings.TrimSpace(input.ProjectName), input.ScreenID, input.SKUID, strings.TrimSpace(input.SessionName), strings.TrimSpace(input.TicketLevel), strings.TrimSpace(input.TicketDisplay), input.TicketPrice, strings.TrimSpace(input.SaleStart), strings.TrimSpace(input.SaleStatus), input.LinkID, boolToInt(input.IsHotProject), input.TaskMode, input.DurationMode, selectedTickets, input.RushDurationSeconds, input.OrderType, input.PayMoney, buyerInfo, strings.TrimSpace(input.Buyer), strings.TrimSpace(input.Tel), deliverInfo, strings.TrimSpace(input.Phone), input.TimeSyncStrategy, input.Quantity, strings.TrimSpace(input.StartAt), strings.TrimSpace(input.EndAt), input.PollIntervalMillis, input.RushPollIntervalMillis, input.RestockPollIntervalMillis, now, now)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -986,7 +1181,7 @@ func (s *Store) GetTask(ctx context.Context, id int64) (model.Task, error) {
 	var task model.Task
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
-			t.id, t.name, t.account_id, COALESCE(a.name, ''), t.proxy_group_id, COALESCE(pg.name, ''), t.proxy_mode, t.super_mode, t.super_mode_base,
+			t.id, t.owner_uid, t.name, t.account_id, COALESCE(a.name, ''), t.proxy_group_id, COALESCE(pg.name, ''), t.proxy_mode, t.super_mode, t.super_mode_base,
 			t.project_id, t.project_name, t.screen_id, t.sku_id,
 			t.session_name, t.ticket_level, t.ticket_display, t.ticket_price,
 				t.sale_start, t.sale_status, t.link_id, t.is_hot_project,
@@ -1004,6 +1199,16 @@ func (s *Store) GetTask(ctx context.Context, id int64) (model.Task, error) {
 	`, id)
 	err := scanTask(row, &task)
 	return task, err
+}
+
+func (s *Store) GetTaskOwnerUID(ctx context.Context, id int64) (int64, error) {
+	var ownerUID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT owner_uid
+		FROM tasks
+		WHERE id = ?
+	`, id).Scan(&ownerUID)
+	return ownerUID, err
 }
 
 func (s *Store) UpdateTask(ctx context.Context, id int64, input model.TaskInput) (model.Task, error) {
@@ -1276,9 +1481,9 @@ func (s *Store) SetTaskMatchedTicket(ctx context.Context, id int64, ticket model
 
 func (s *Store) AddTaskLog(ctx context.Context, taskID int64, level string, message string) (model.TaskLog, error) {
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO task_logs (task_id, level, message, created_at)
-		VALUES (?, ?, ?, ?)
-	`, taskID, level, message, nowText())
+		INSERT INTO task_logs (task_id, owner_uid, level, message, created_at)
+		VALUES (?, COALESCE((SELECT owner_uid FROM tasks WHERE id = ?), 0), ?, ?, ?)
+	`, taskID, taskID, level, message, nowText())
 	if err != nil {
 		return model.TaskLog{}, err
 	}
@@ -1299,17 +1504,18 @@ func (s *Store) GetTaskLog(ctx context.Context, id int64) (model.TaskLog, error)
 	return log, err
 }
 
-func (s *Store) ListTaskLogs(ctx context.Context, taskID int64) ([]model.TaskLog, error) {
+func (s *Store) ListTaskLogs(ctx context.Context, ownerUID int64, taskID int64) ([]model.TaskLog, error) {
 	query := `
-		SELECT id, task_id, level, message, created_at
-		FROM task_logs
+		SELECT l.id, l.task_id, l.level, l.message, l.created_at
+		FROM task_logs l
+		WHERE l.owner_uid = ?
 	`
-	args := []any{}
+	args := []any{ownerUID}
 	if taskID > 0 {
-		query += ` WHERE task_id = ?`
+		query += ` AND l.task_id = ?`
 		args = append(args, taskID)
 	}
-	query += ` ORDER BY id DESC LIMIT 200`
+	query += ` ORDER BY l.id DESC LIMIT 200`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1328,10 +1534,10 @@ func (s *Store) ListTaskLogs(ctx context.Context, taskID int64) ([]model.TaskLog
 	return logs, rows.Err()
 }
 
-func (s *Store) ListBWSTasks(ctx context.Context) ([]model.BWSTask, error) {
+func (s *Store) ListBWSTasks(ctx context.Context, ownerUID int64) ([]model.BWSTask, error) {
 	rows, err := s.db.QueryContext(ctx, `
 			SELECT
-				t.id, t.name, t.account_id, COALESCE(a.name, ''),
+				t.id, t.owner_uid, t.name, t.account_id, COALESCE(a.name, ''),
 				t.proxy_group_id, COALESCE(pg.name, ''), t.proxy_mode,
 				t.reserve_type, t.year, t.reserve_date,
 				t.ticket_no, t.reserve_id, t.title, t.reserve_begin_time,
@@ -1340,8 +1546,9 @@ func (s *Store) ListBWSTasks(ctx context.Context) ([]model.BWSTask, error) {
 			FROM bws_tasks t
 			LEFT JOIN accounts a ON a.id = t.account_id
 			LEFT JOIN proxy_groups pg ON pg.id = t.proxy_group_id
+			WHERE t.owner_uid = ?
 			ORDER BY t.updated_at DESC, t.id DESC
-	`)
+	`, ownerUID)
 	if err != nil {
 		return nil, err
 	}
@@ -1358,17 +1565,17 @@ func (s *Store) ListBWSTasks(ctx context.Context) ([]model.BWSTask, error) {
 	return tasks, rows.Err()
 }
 
-func (s *Store) CreateBWSTask(ctx context.Context, input model.BWSTaskInput) (model.BWSTask, error) {
+func (s *Store) CreateBWSTask(ctx context.Context, ownerUID int64, input model.BWSTaskInput) (model.BWSTask, error) {
 	now := nowText()
 	input = normalizeBWSTaskInput(input)
 	result, err := s.db.ExecContext(ctx, `
 				INSERT INTO bws_tasks (
-					name, account_id, proxy_group_id, proxy_mode, reserve_type, year, reserve_date, ticket_no, reserve_id, title,
+					owner_uid, name, account_id, proxy_group_id, proxy_mode, reserve_type, year, reserve_date, ticket_no, reserve_id, title,
 					reserve_begin_time, mode, time_sync_strategy, poll_interval_ms,
 					status, last_message, created_at, updated_at
 				)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'BWS 预约任务已创建，等待启动。', ?, ?)
-			`, strings.TrimSpace(input.Name), input.AccountID, input.ProxyGroupID, input.ProxyMode, input.ReserveType, strings.TrimSpace(input.Year), strings.TrimSpace(input.ReserveDate), strings.TrimSpace(input.TicketNo), input.ReserveID, strings.TrimSpace(input.Title), input.ReserveBeginTime, input.Mode, input.TimeSyncStrategy, input.PollIntervalMillis, now, now)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'BWS 预约任务已创建，等待启动。', ?, ?)
+			`, ownerUID, strings.TrimSpace(input.Name), input.AccountID, input.ProxyGroupID, input.ProxyMode, input.ReserveType, strings.TrimSpace(input.Year), strings.TrimSpace(input.ReserveDate), strings.TrimSpace(input.TicketNo), input.ReserveID, strings.TrimSpace(input.Title), input.ReserveBeginTime, input.Mode, input.TimeSyncStrategy, input.PollIntervalMillis, now, now)
 	if err != nil {
 		return model.BWSTask{}, err
 	}
@@ -1386,7 +1593,7 @@ func (s *Store) GetBWSTask(ctx context.Context, id int64) (model.BWSTask, error)
 	var task model.BWSTask
 	row := s.db.QueryRowContext(ctx, `
 			SELECT
-				t.id, t.name, t.account_id, COALESCE(a.name, ''),
+				t.id, t.owner_uid, t.name, t.account_id, COALESCE(a.name, ''),
 				t.proxy_group_id, COALESCE(pg.name, ''), t.proxy_mode,
 				t.reserve_type, t.year, t.reserve_date,
 				t.ticket_no, t.reserve_id, t.title, t.reserve_begin_time,
@@ -1399,6 +1606,16 @@ func (s *Store) GetBWSTask(ctx context.Context, id int64) (model.BWSTask, error)
 	`, id)
 	err := scanBWSTask(row, &task)
 	return task, err
+}
+
+func (s *Store) GetBWSTaskOwnerUID(ctx context.Context, id int64) (int64, error) {
+	var ownerUID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT owner_uid
+		FROM bws_tasks
+		WHERE id = ?
+	`, id).Scan(&ownerUID)
+	return ownerUID, err
 }
 
 func (s *Store) UpdateBWSTask(ctx context.Context, id int64, input model.BWSTaskInput) (model.BWSTask, error) {
@@ -1539,9 +1756,9 @@ func (s *Store) SetBWSTaskTimeSync(ctx context.Context, id int64, strategy strin
 
 func (s *Store) AddBWSTaskLog(ctx context.Context, taskID int64, level string, message string) (model.BWSTaskLog, error) {
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO bws_task_logs (task_id, level, message, created_at)
-		VALUES (?, ?, ?, ?)
-	`, taskID, strings.TrimSpace(level), strings.TrimSpace(message), nowText())
+		INSERT INTO bws_task_logs (task_id, owner_uid, level, message, created_at)
+		VALUES (?, COALESCE((SELECT owner_uid FROM bws_tasks WHERE id = ?), 0), ?, ?, ?)
+	`, taskID, taskID, strings.TrimSpace(level), strings.TrimSpace(message), nowText())
 	if err != nil {
 		return model.BWSTaskLog{}, err
 	}
@@ -1562,17 +1779,18 @@ func (s *Store) GetBWSTaskLog(ctx context.Context, id int64) (model.BWSTaskLog, 
 	return log, err
 }
 
-func (s *Store) ListBWSTaskLogs(ctx context.Context, taskID int64) ([]model.BWSTaskLog, error) {
+func (s *Store) ListBWSTaskLogs(ctx context.Context, ownerUID int64, taskID int64) ([]model.BWSTaskLog, error) {
 	query := `
-		SELECT id, task_id, level, message, created_at
-		FROM bws_task_logs
+		SELECT l.id, l.task_id, l.level, l.message, l.created_at
+		FROM bws_task_logs l
+		WHERE l.owner_uid = ?
 	`
-	args := []any{}
+	args := []any{ownerUID}
 	if taskID > 0 {
-		query += ` WHERE task_id = ?`
+		query += ` AND l.task_id = ?`
 		args = append(args, taskID)
 	}
-	query += ` ORDER BY id DESC LIMIT 200`
+	query += ` ORDER BY l.id DESC LIMIT 200`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1650,6 +1868,7 @@ func scanNotification(scanner taskScanner, notification *model.Notification) err
 	var enabled int
 	if err := scanner.Scan(
 		&notification.ID,
+		&notification.OwnerUID,
 		&notification.Name,
 		&notification.Provider,
 		&config,
@@ -1678,6 +1897,7 @@ func scanProxyGroup(scanner taskScanner, group *model.ProxyGroup) error {
 	var inUse int
 	if err := scanner.Scan(
 		&group.ID,
+		&group.OwnerUID,
 		&group.Name,
 		&group.Type,
 		&group.APIProvider,
@@ -1742,6 +1962,7 @@ func scanTask(scanner taskScanner, task *model.Task) error {
 	var deliverInfo string
 	if err := scanner.Scan(
 		&task.ID,
+		&task.OwnerUID,
 		&task.Name,
 		&task.AccountID,
 		&task.AccountName,
@@ -1833,6 +2054,7 @@ func scanTask(scanner taskScanner, task *model.Task) error {
 func scanBWSTask(scanner taskScanner, task *model.BWSTask) error {
 	if err := scanner.Scan(
 		&task.ID,
+		&task.OwnerUID,
 		&task.Name,
 		&task.AccountID,
 		&task.AccountName,

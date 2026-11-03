@@ -28,7 +28,7 @@ func (s *Service) SendTaskSuccess(ctx context.Context, task model.Task) {
 	if s == nil || s.store == nil || s.sender == nil {
 		return
 	}
-	notifications, err := s.store.ListEnabledNotifications(ctx)
+	notifications, err := s.store.ListEnabledNotifications(ctx, task.OwnerUID)
 	if err != nil || len(notifications) == 0 {
 		return
 	}

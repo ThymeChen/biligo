@@ -39,6 +39,7 @@ type QRPollResult struct {
 	Message  string
 	Code     int
 	Cookie   string
+	UID      int64
 	Username string
 }
 
@@ -132,7 +133,7 @@ func (c *Client) PollQRLogin(ctx context.Context, qrcodeKey string) (QRPollResul
 	switch stateCode {
 	case 0:
 		cookie := CookiesToHeader(resp.Cookies())
-		username, loggedIn, err := c.VerifyCookie(ctx, cookie)
+		uid, username, loggedIn, err := c.VerifyCookie(ctx, cookie)
 		if err != nil {
 			return QRPollResult{}, err
 		}
@@ -150,6 +151,7 @@ func (c *Client) PollQRLogin(ctx context.Context, qrcodeKey string) (QRPollResul
 			Message:  "登录成功",
 			Code:     stateCode,
 			Cookie:   cookie,
+			UID:      uid,
 			Username: username,
 		}, nil
 	case 86101:
@@ -163,15 +165,15 @@ func (c *Client) PollQRLogin(ctx context.Context, qrcodeKey string) (QRPollResul
 	}
 }
 
-func (c *Client) VerifyCookie(ctx context.Context, cookie string) (string, bool, error) {
+func (c *Client) VerifyCookie(ctx context.Context, cookie string) (int64, string, bool, error) {
 	cookie = NormalizeCookieHeader(cookie)
 	if cookie == "" {
-		return "", false, nil
+		return 0, "", false, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, navURL, nil)
 	if err != nil {
-		return "", false, err
+		return 0, "", false, err
 	}
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Referer", "https://show.bilibili.com/")
@@ -180,24 +182,24 @@ func (c *Client) VerifyCookie(ctx context.Context, cookie string) (string, bool,
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", false, err
+		return 0, "", false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", false, fmt.Errorf("登录态验证接口返回状态码 %d", resp.StatusCode)
+		return 0, "", false, fmt.Errorf("登录态验证接口返回状态码 %d", resp.StatusCode)
 	}
 
 	var payload navPayload
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", false, err
+		return 0, "", false, err
 	}
 	if payload.Code != 0 {
-		return "", false, nil
+		return 0, "", false, nil
 	}
 
 	username := strings.TrimSpace(payload.Data.Uname)
-	return username, payload.Data.IsLogin && username != "", nil
+	return payload.Data.Mid, username, payload.Data.IsLogin && payload.Data.Mid > 0 && username != "", nil
 }
 
 func CookiesToHeader(cookies []*http.Cookie) string {
@@ -263,6 +265,7 @@ type navPayload struct {
 	Code int `json:"code"`
 	Data struct {
 		IsLogin bool   `json:"isLogin"`
+		Mid     int64  `json:"mid"`
 		Uname   string `json:"uname"`
 	} `json:"data"`
 }

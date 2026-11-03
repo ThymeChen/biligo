@@ -1,24 +1,18 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Server                 ServerConfig   `yaml:"server"`
-	Database               DatabaseConfig `yaml:"database"`
-	Auth                   AuthConfig     `yaml:"auth"`
-	Logging                LoggingConfig  `yaml:"logging"`
-	Path                   string         `yaml:"-"`
-	GeneratedConfigFile    bool           `yaml:"-"`
-	GeneratedPanelPassword string         `yaml:"-"`
+	Server   ServerConfig   `yaml:"server"`
+	Database DatabaseConfig `yaml:"database"`
+	Logging  LoggingConfig  `yaml:"logging"`
+	Path     string         `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -27,10 +21,6 @@ type ServerConfig struct {
 
 type DatabaseConfig struct {
 	Path string `yaml:"path"`
-}
-
-type AuthConfig struct {
-	Password string `yaml:"password"`
 }
 
 type LoggingConfig struct {
@@ -71,20 +61,13 @@ func Load(path string) (Config, error) {
 	}
 	cfg.Path = path
 
-	configFileExists := true
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return Config{}, err
 		}
-		configFileExists = false
 	} else if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
-	}
-
-	envPanelPassword := strings.TrimSpace(os.Getenv("BILIGO_PANEL_PASSWORD"))
-	if envPanelPassword != "" {
-		cfg.Auth.Password = envPanelPassword
 	}
 
 	if cfg.Server.Addr == "" {
@@ -96,18 +79,6 @@ func Load(path string) (Config, error) {
 	cfg.Logging.Color = normalizeLogColor(cfg.Logging.Color)
 	if strings.TrimSpace(cfg.Logging.File.Path) == "" {
 		cfg.Logging.File.Path = "logs/biligo.log"
-	}
-	if strings.TrimSpace(cfg.Auth.Password) == "" {
-		password, err := generatePanelPassword()
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.Auth.Password = password
-		cfg.GeneratedPanelPassword = password
-		if err := writeConfig(path, cfg); err != nil {
-			return Config{}, err
-		}
-		cfg.GeneratedConfigFile = !configFileExists
 	}
 	if addr := os.Getenv("BILIGO_ADDR"); addr != "" {
 		cfg.Server.Addr = addr
@@ -123,27 +94,6 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func ReadPanelPassword(path string) (string, error) {
-	if path == "" {
-		path = os.Getenv("BILIGO_CONFIG")
-	}
-	if path == "" {
-		path = "config.yaml"
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return "", err
-	}
-	if envPanelPassword := strings.TrimSpace(os.Getenv("BILIGO_PANEL_PASSWORD")); envPanelPassword != "" {
-		return envPanelPassword, nil
-	}
-	return strings.TrimSpace(cfg.Auth.Password), nil
 }
 
 func (levels *LogLevels) UnmarshalYAML(value *yaml.Node) error {
@@ -185,25 +135,4 @@ func normalizeLogColor(raw string) string {
 	default:
 		return "auto"
 	}
-}
-
-func generatePanelPassword() (string, error) {
-	var raw [18]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
-}
-
-func writeConfig(path string, cfg Config) error {
-	if dir := filepath.Dir(path); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
 }

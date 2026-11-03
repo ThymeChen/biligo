@@ -71,8 +71,11 @@ export interface QRLoginStartResponse {
 
 export interface QRLoginPollInput {
   qrcodeKey: string
-  accountName: string
-  note: string
+}
+
+export interface UserSession {
+  uid: number
+  username: string
 }
 
 export interface QRLoginPollResponse {
@@ -81,14 +84,9 @@ export interface QRLoginPollResponse {
   message: string
   code?: number
   username?: string
-  account?: Account
-}
-
-export interface CookieLoginResponse {
-  ok: boolean
-  loggedIn: boolean
-  username?: string
-  message: string
+  token?: string
+  user?: UserSession
+  expiresAt?: string
   account?: Account
 }
 
@@ -101,13 +99,10 @@ export interface AccountVerifyResponse {
   account?: Account
 }
 
-export interface PanelLoginInput {
-  password: string
-}
-
-export interface PanelAuthResponse {
+export interface UserAuthResponse {
   token?: string
   expiresAt: string
+  user?: UserSession
 }
 
 export interface Notification {
@@ -490,34 +485,34 @@ export interface BWSTaskLog {
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
-const PANEL_AUTH_TOKEN_KEY = 'biligo.panelAuth.token'
-const PANEL_AUTH_EXPIRES_KEY = 'biligo.panelAuth.expiresAt'
+const USER_AUTH_TOKEN_KEY = 'biligo.userAuth.token'
+const USER_AUTH_EXPIRES_KEY = 'biligo.userAuth.expiresAt'
 
 type APIRequestInit = RequestInit & {
   skipUnauthorizedHandler?: boolean
 }
 
-let panelAuthToken = localStorage.getItem(PANEL_AUTH_TOKEN_KEY) ?? ''
+let userAuthToken = localStorage.getItem(USER_AUTH_TOKEN_KEY) ?? ''
 let unauthorizedHandler: (() => void) | undefined
 
-export function getPanelAuthToken() {
-  return panelAuthToken
+export function getUserAuthToken() {
+  return userAuthToken
 }
 
-export function setPanelAuthToken(token: string, expiresAt: string) {
-  panelAuthToken = token
-  localStorage.setItem(PANEL_AUTH_TOKEN_KEY, token)
-  localStorage.setItem(PANEL_AUTH_EXPIRES_KEY, expiresAt)
+export function setUserAuthToken(token: string, expiresAt: string) {
+  userAuthToken = token
+  localStorage.setItem(USER_AUTH_TOKEN_KEY, token)
+  localStorage.setItem(USER_AUTH_EXPIRES_KEY, expiresAt)
 }
 
-export function clearPanelAuthToken() {
-  panelAuthToken = ''
-  localStorage.removeItem(PANEL_AUTH_TOKEN_KEY)
-  localStorage.removeItem(PANEL_AUTH_EXPIRES_KEY)
+export function clearUserAuthToken() {
+  userAuthToken = ''
+  localStorage.removeItem(USER_AUTH_TOKEN_KEY)
+  localStorage.removeItem(USER_AUTH_EXPIRES_KEY)
 }
 
-export function getPanelAuthExpiresAt() {
-  return localStorage.getItem(PANEL_AUTH_EXPIRES_KEY) ?? ''
+export function getUserAuthExpiresAt() {
+  return localStorage.getItem(USER_AUTH_EXPIRES_KEY) ?? ''
 }
 
 export function setUnauthorizedHandler(handler: () => void) {
@@ -530,8 +525,8 @@ async function request<T>(path: string, options: APIRequestInit = {}): Promise<T
     'Content-Type': 'application/json',
     ...(headers as Record<string, string> | undefined),
   }
-  if (panelAuthToken) {
-    requestHeaders.Authorization = `Bearer ${panelAuthToken}`
+  if (userAuthToken) {
+    requestHeaders.Authorization = `Bearer ${userAuthToken}`
   }
 
   const response = await fetch(`${API_BASE}${path}`, {
@@ -564,27 +559,17 @@ async function request<T>(path: string, options: APIRequestInit = {}): Promise<T
 
 export const api = {
   health: () => request<Health>('/api/health'),
-  panelLogin: (payload: PanelLoginInput) =>
-    request<PanelAuthResponse>('/api/panel-auth/login', {
+  startUserQRLogin: () =>
+    request<QRLoginStartResponse>('/api/user-auth/qr/start', { method: 'POST', skipUnauthorizedHandler: true }),
+  pollUserQRLogin: (payload: QRLoginPollInput) =>
+    request<QRLoginPollResponse>('/api/user-auth/qr/poll', {
       method: 'POST',
       body: JSON.stringify(payload),
       skipUnauthorizedHandler: true,
     }),
-  panelSession: () => request<PanelAuthResponse>('/api/panel-auth/session', { skipUnauthorizedHandler: true }),
-  panelLogout: () => request<void>('/api/panel-auth/logout', { method: 'POST', skipUnauthorizedHandler: true }),
+  userSession: () => request<UserAuthResponse>('/api/user-auth/session', { skipUnauthorizedHandler: true }),
+  userLogout: () => request<void>('/api/user-auth/logout', { method: 'POST', skipUnauthorizedHandler: true }),
   session: () => request<SessionSummary>('/api/auth/session'),
-  startQRLogin: () =>
-    request<QRLoginStartResponse>('/api/auth/qr/start', { method: 'POST' }),
-  pollQRLogin: (payload: QRLoginPollInput) =>
-    request<QRLoginPollResponse>('/api/auth/qr/poll', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  loginWithCookie: (payload: AccountInput) =>
-    request<CookieLoginResponse>('/api/auth/cookie-login', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
 
   listAccounts: () => request<Account[]>('/api/accounts'),
   createAccount: (payload: AccountInput) =>

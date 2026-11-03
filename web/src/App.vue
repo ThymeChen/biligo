@@ -25,9 +25,7 @@ import {
 } from '@element-plus/icons-vue'
 import type {
   Account,
-  AccountExportItem,
   AccountInput,
-  AccountImportInput,
   BWSInfoInput,
   BWSItem,
   BWSMyReservation,
@@ -57,15 +55,14 @@ import type {
 import {
   API_BASE,
   api,
-  clearPanelAuthToken,
-  getPanelAuthExpiresAt,
-  getPanelAuthToken,
-  setPanelAuthToken,
+  clearUserAuthToken,
+  getUserAuthExpiresAt,
+  getUserAuthToken,
+  setUserAuthToken,
   setUnauthorizedHandler,
 } from './api'
 
 type SectionKey = 'accounts' | 'notifications' | 'proxies' | 'taskConfig' | 'bws' | 'taskStatus'
-type AccountFormMode = 'direct' | 'json'
 type QRLoginStatus = 'idle' | 'generated' | 'waiting_scan' | 'waiting_confirm' | 'confirmed' | 'expired' | 'failed'
 type TicketProjectHistorySuggestion = TicketProjectHistory & { value: string }
 type ManagedTaskKind = 'ticket' | 'bws'
@@ -106,11 +103,11 @@ const notice = ref('')
 const health = ref<Health | null>(null)
 const session = ref<SessionSummary | null>(null)
 const mobileNavOpen = ref(false)
-const panelAuth = reactive({
+const userAuth = reactive({
   checking: true,
   authenticated: false,
-  password: '',
-  expiresAt: getPanelAuthExpiresAt(),
+  username: '',
+  expiresAt: getUserAuthExpiresAt(),
 })
 
 const accounts = ref<Account[]>([])
@@ -135,9 +132,8 @@ const accountForm = reactive<AccountInput>({
   cookie: '',
   note: '',
 })
-const accountFormMode = ref<AccountFormMode>('direct')
-const accountImportJSON = ref('')
 const accountExportDialogVisible = ref(false)
+const accountEditDialogVisible = ref(false)
 const selectedAccountExportIds = ref<number[]>([])
 
 const notificationForm = reactive<NotificationInput>({
@@ -175,8 +171,6 @@ const proxyNodeForm = reactive<ProxyNodeInput>({
 const qrLogin = reactive({
   qrcodeKey: '',
   qrImageDataUrl: '',
-  accountName: '',
-  note: '',
   message: '',
   status: 'idle' as QRLoginStatus,
   autoPolling: false,
@@ -275,7 +269,7 @@ const nowMs = ref(Date.now())
 const sseStatus = ref('未连接')
 let eventSource: EventSource | null = null
 let clockTimer: number | undefined
-let panelAuthExpiryTimer: number | undefined
+let userAuthExpiryTimer: number | undefined
 
 const managedTasks = computed<ManagedTaskRow[]>(() => {
   const rows: ManagedTaskRow[] = [
@@ -451,43 +445,35 @@ async function loadAll() {
   })
 }
 
-async function initializePanelAuth() {
-  setUnauthorizedHandler(handlePanelUnauthorized)
-  panelAuth.checking = true
+async function initializeUserAuth() {
+  setUnauthorizedHandler(handleUserUnauthorized)
+  userAuth.checking = true
   try {
-    if (!getPanelAuthToken()) {
-      panelAuth.authenticated = false
+    if (!getUserAuthToken()) {
+      userAuth.authenticated = false
+      void startQRLogin()
       return
     }
-    const session = await api.panelSession()
-    panelAuth.expiresAt = session.expiresAt
-    panelAuth.authenticated = true
-    schedulePanelAuthExpiry(session.expiresAt)
+    const session = await api.userSession()
+    userAuth.expiresAt = session.expiresAt
+    userAuth.username = session.user?.username ?? ''
+    userAuth.authenticated = true
+    scheduleUserAuthExpiry(session.expiresAt)
     await bootConsole()
   } catch {
-    clearPanelSession()
+    clearUserSession()
   } finally {
-    panelAuth.checking = false
+    userAuth.checking = false
   }
 }
 
-async function loginPanel() {
-  await run(async () => {
-    const password = panelAuth.password.trim()
-    if (!password) {
-      throw new Error('请输入面板密码')
-    }
-    const result = await api.panelLogin({ password })
-    if (!result.token) {
-      throw new Error('登录响应缺少 token')
-    }
-    setPanelAuthToken(result.token, result.expiresAt)
-    panelAuth.password = ''
-    panelAuth.expiresAt = result.expiresAt
-    panelAuth.authenticated = true
-    schedulePanelAuthExpiry(result.expiresAt)
-    await bootConsole()
-  }, '面板登录成功')
+function completeUserLogin(token: string, expiresAt: string, username: string) {
+  setUserAuthToken(token, expiresAt)
+  userAuth.username = username
+  userAuth.expiresAt = expiresAt
+  userAuth.authenticated = true
+  scheduleUserAuthExpiry(expiresAt)
+  activeSection.value = 'accounts'
 }
 
 async function bootConsole() {
@@ -498,31 +484,33 @@ async function bootConsole() {
   startClock()
 }
 
-async function logoutPanel() {
+async function logoutUser() {
   try {
-    if (getPanelAuthToken()) {
-      await api.panelLogout()
+    if (getUserAuthToken()) {
+      await api.userLogout()
     }
   } catch {
     // Local logout should still work if the server token already expired.
   } finally {
-    clearPanelSession()
-    notice.value = '已退出面板登录'
+    clearUserSession()
+    notice.value = '已退出登录'
   }
 }
 
-function handlePanelUnauthorized() {
-  clearPanelSession()
-  error.value = '面板登录已失效，请重新登录。'
+function handleUserUnauthorized() {
+  clearUserSession()
+  error.value = '登录已失效，请重新登录。'
 }
 
-function clearPanelSession() {
-  clearPanelAuthToken()
-  panelAuth.authenticated = false
-  panelAuth.expiresAt = ''
+function clearUserSession() {
+  clearUserAuthToken()
+  userAuth.authenticated = false
+  userAuth.username = ''
+  userAuth.expiresAt = ''
   closeEvents()
   stopClock()
-  clearPanelAuthExpiry()
+  clearUserAuthExpiry()
+  resetQRLogin()
   accounts.value = []
   proxyGroups.value = []
   proxyNodes.value = []
@@ -543,43 +531,39 @@ function clearPanelSession() {
   selectedAccountExportIds.value = []
 }
 
-function schedulePanelAuthExpiry(expiresAt: string) {
-  clearPanelAuthExpiry()
+function scheduleUserAuthExpiry(expiresAt: string) {
+  clearUserAuthExpiry()
   const expiresAtMs = Date.parse(expiresAt)
   if (Number.isNaN(expiresAtMs)) {
     return
   }
   const delay = expiresAtMs - Date.now()
   if (delay <= 0) {
-    handlePanelUnauthorized()
+    handleUserUnauthorized()
     return
   }
-  panelAuthExpiryTimer = window.setTimeout(handlePanelUnauthorized, delay)
+  userAuthExpiryTimer = window.setTimeout(handleUserUnauthorized, delay)
 }
 
-function clearPanelAuthExpiry() {
-  if (panelAuthExpiryTimer === undefined) {
+function clearUserAuthExpiry() {
+  if (userAuthExpiryTimer === undefined) {
     return
   }
-  window.clearTimeout(panelAuthExpiryTimer)
-  panelAuthExpiryTimer = undefined
+  window.clearTimeout(userAuthExpiryTimer)
+  userAuthExpiryTimer = undefined
 }
 
 function resetAccountForm() {
   editingAccountId.value = null
-  accountFormMode.value = 'direct'
   accountForm.name = ''
   accountForm.cookie = ''
   accountForm.note = ''
-  accountImportJSON.value = ''
 }
 
 function resetQRLogin() {
   stopQRAutoPoll()
   qrLogin.qrcodeKey = ''
   qrLogin.qrImageDataUrl = ''
-  qrLogin.accountName = ''
-  qrLogin.note = ''
   qrLogin.message = ''
   qrLogin.status = 'idle'
   qrLogin.polling = false
@@ -630,12 +614,10 @@ function openAccountExportDialog() {
 
 async function editAccount(account: Account) {
   editingAccountId.value = account.id
-  accountFormMode.value = 'direct'
   accountForm.name = account.name
   accountForm.cookie = ''
   accountForm.note = account.note
-  accountImportJSON.value = ''
-  activeSection.value = 'accounts'
+  accountEditDialogVisible.value = true
   if (!account.hasCookie) {
     return
   }
@@ -651,7 +633,7 @@ async function editAccount(account: Account) {
 async function startQRLogin() {
   await run(async () => {
     stopQRAutoPoll()
-    const result = await api.startQRLogin()
+    const result = await api.startUserQRLogin()
     qrLogin.qrcodeKey = result.qrcodeKey
     qrLogin.qrImageDataUrl = result.qrImageDataUrl
     qrLogin.status = 'generated'
@@ -690,11 +672,7 @@ async function pollQRLoginOnce(auto: boolean) {
   const pollKey = qrLogin.qrcodeKey
   qrLogin.polling = true
   try {
-    const result = await api.pollQRLogin({
-      qrcodeKey: pollKey,
-      accountName: qrLogin.accountName,
-      note: qrLogin.note,
-    })
+    const result = await api.pollUserQRLogin({ qrcodeKey: pollKey })
     if (pollKey !== qrLogin.qrcodeKey) {
       return
     }
@@ -705,11 +683,14 @@ async function pollQRLoginOnce(auto: boolean) {
     if (result.status === 'confirmed') {
       stopQRAutoPoll()
       qrLogin.polling = false
-      qrLogin.qrcodeKey = ''
-      qrLogin.status = 'confirmed'
-      qrLogin.message = '登录成功，已添加账号'
-      await refreshAccountsAndSession()
-      notice.value = `账号 ${result.username ?? result.account?.name ?? ''} 已登录`.trim()
+      if (!result.token) {
+        throw new Error('登录响应缺少 token')
+      }
+      const username = result.user?.username ?? result.username ?? ''
+      completeUserLogin(result.token, result.expiresAt ?? '', username)
+      resetQRLogin()
+      await bootConsole()
+      notice.value = `欢迎，${username || '用户'}`
       return
     }
 
@@ -742,14 +723,6 @@ async function pollQRLoginOnce(auto: boolean) {
   }
 }
 
-async function submitAccountPanel() {
-  if (accountFormMode.value === 'json') {
-    await importAccount()
-    return
-  }
-  await saveAccount()
-}
-
 async function saveAccount() {
   await run(async () => {
     if (editingAccountId.value) {
@@ -758,19 +731,9 @@ async function saveAccount() {
       await api.createAccount(accountForm)
     }
     resetAccountForm()
+    accountEditDialogVisible.value = false
     await refreshAccountsAndSession()
   }, '账号信息已保存')
-}
-
-async function loginWithCookie() {
-  await run(async () => {
-    const result = await api.loginWithCookie(accountForm)
-    if (!result.loggedIn) {
-      throw new Error(result.message)
-    }
-    resetAccountForm()
-    await refreshAccountsAndSession()
-  }, 'Cookie 已验证并保存')
 }
 
 async function verifyAccount(id: number) {
@@ -802,67 +765,6 @@ async function exportSelectedAccounts() {
     accountExportDialogVisible.value = false
     notice.value = `已导出 ${payload.accounts.length} 个账号`
   })
-}
-
-async function importAccount() {
-  await run(async () => {
-    const payload = parseAccountImportJSON(accountImportJSON.value)
-    const result = await api.importAccounts(payload)
-    accountImportJSON.value = ''
-    await refreshAccountsAndSession()
-    notice.value = `已导入 ${result.imported} 个账号`
-  })
-}
-
-function parseAccountImportJSON(text: string): AccountImportInput {
-  const raw = text.trim()
-  if (!raw) {
-    throw new Error('导入 JSON 不能为空')
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new Error('导入内容不是有效 JSON')
-  }
-
-  const accounts = Array.isArray(parsed)
-    ? parsed
-    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { accounts?: unknown }).accounts)
-      ? (parsed as { accounts: unknown[] }).accounts
-      : null
-  if (!accounts) {
-    throw new Error('导入 JSON 需要包含 accounts 数组')
-  }
-  return {
-    accounts: accounts.map((account, index) => normalizeAccountImportItem(account, index)),
-  }
-}
-
-function normalizeAccountImportItem(account: unknown, index: number): AccountExportItem {
-  if (!account || typeof account !== 'object') {
-    throw new Error(`第 ${index + 1} 个账号格式不正确`)
-  }
-  const item = account as Partial<Record<keyof AccountExportItem, unknown>>
-  const name = stringFromUnknown(item.name).trim()
-  if (!name) {
-    throw new Error(`第 ${index + 1} 个账号名称不能为空`)
-  }
-  return {
-    name,
-    cookie: stringFromUnknown(item.cookie).trim(),
-    note: stringFromUnknown(item.note).trim(),
-  }
-}
-
-function stringFromUnknown(value: unknown): string {
-  if (typeof value === 'string') {
-    return value
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value)
-  }
-  return ''
 }
 
 function accountsExportFileName() {
@@ -2154,7 +2056,7 @@ async function confirmDeleteManagedTask(row: ManagedTaskRow) {
 
 function connectEvents() {
   eventSource?.close()
-  const token = getPanelAuthToken()
+  const token = getUserAuthToken()
   if (!token) {
     sseStatus.value = '未登录'
     return
@@ -2729,7 +2631,7 @@ function qrStatusTagType() {
 }
 
 onMounted(async () => {
-  await initializePanelAuth()
+  await initializeUserAuth()
 })
 
 onUnmounted(() => {
@@ -2740,34 +2642,46 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section v-if="panelAuth.checking" class="auth-shell">
+  <section v-if="userAuth.checking" class="auth-shell">
     <div class="auth-card">
       <p class="eyebrow">Biligo</p>
       <h1>票务控制台</h1>
-      <p class="muted">正在校验面板登录状态...</p>
+      <p class="muted">正在校验登录状态...</p>
     </div>
   </section>
 
-  <section v-else-if="!panelAuth.authenticated" class="auth-shell">
-    <el-form class="auth-card" label-position="top" @submit.prevent="loginPanel">
+  <section v-else-if="!userAuth.authenticated" class="auth-shell">
+    <div class="auth-card">
       <div>
         <p class="eyebrow">Biligo</p>
         <h1>票务控制台</h1>
-        <p class="muted">请输入本地面板密码后继续。</p>
+        <p class="muted">使用哔哩哔哩 App 扫码登录。</p>
       </div>
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="global-message-alert" />
-      <el-form-item required label="面板密码">
-        <el-input
-          v-model="panelAuth.password"
-          type="password"
-          show-password
-          autocomplete="current-password"
-          placeholder="查看控制台或 config.yaml"
-          @keyup.enter="loginPanel"
-        />
-      </el-form-item>
-      <el-button native-type="submit" type="primary" :loading="loading">登录</el-button>
-    </el-form>
+      <div class="qr-status-row">
+        <el-tag :type="qrStatusTagType()">{{ qrStatusLabel }}</el-tag>
+        <span class="muted">{{ qrLogin.autoPolling ? '自动轮询中' : '自动轮询已停止' }}</span>
+        <span v-if="qrLogin.lastCheckedAt" class="muted">上次检查 {{ qrLogin.lastCheckedAt }}</span>
+      </div>
+      <el-alert
+        :title="qrStatusMessage"
+        :type="qrMessageAlertType"
+        show-icon
+        :closable="false"
+        class="qr-message-alert"
+      />
+      <div v-if="qrLogin.qrImageDataUrl" class="qr-preview">
+        <img :src="qrLogin.qrImageDataUrl" alt="Bilibili 登录二维码" />
+      </div>
+      <div class="button-row">
+        <el-button type="primary" :icon="CirclePlus" :loading="loading || qrLogin.polling" @click="startQRLogin">
+          {{ qrLogin.qrImageDataUrl ? '刷新二维码' : '生成二维码' }}
+        </el-button>
+        <el-button :icon="Check" :disabled="loading || qrLogin.polling || !qrLogin.qrcodeKey" @click="pollQRLogin">
+          检查登录
+        </el-button>
+      </div>
+    </div>
   </section>
 
   <el-container v-else class="app-shell">
@@ -2819,100 +2733,19 @@ onUnmounted(() => {
       <header class="topbar">
         <el-button class="mobile-menu-button" :icon="MenuIcon" circle @click="mobileNavOpen = true" />
         <div class="topbar-title">
-          <p class="eyebrow">本地单用户模式</p>
+          <p class="eyebrow">{{ userAuth.username || '已登录' }}</p>
           <h2>{{ sections.find((section) => section.key === activeSection)?.label }}</h2>
         </div>
         <div class="topbar-actions">
           <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
-          <el-button :icon="SwitchButton" plain @click="logoutPanel">退出</el-button>
+          <el-button :icon="SwitchButton" plain @click="logoutUser">退出</el-button>
         </div>
       </header>
 
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="global-message-alert" />
       <el-alert v-if="notice" :title="notice" type="success" show-icon :closable="false" class="global-message-alert" />
 
-      <section v-if="activeSection === 'accounts'" class="content-grid">
-        <div class="stack-column">
-          <section class="panel qr-panel">
-            <div class="panel-heading">
-              <h3>扫码登录</h3>
-              <el-button :icon="Close" text @click="resetQRLogin">清空</el-button>
-            </div>
-            <el-form label-position="top">
-              <el-form-item label="账号名称">
-                <el-input v-model="qrLogin.accountName" placeholder="默认使用 B 站昵称" clearable />
-              </el-form-item>
-              <el-form-item label="备注">
-                <el-input v-model="qrLogin.note" placeholder="可填写实名人或用途备注" clearable />
-              </el-form-item>
-            </el-form>
-            <div class="qr-status-row">
-              <el-tag :type="qrStatusTagType()">{{ qrStatusLabel }}</el-tag>
-              <span class="muted">{{ qrLogin.autoPolling ? '自动轮询中' : '自动轮询已停止' }}</span>
-              <span v-if="qrLogin.lastCheckedAt" class="muted">上次检查 {{ qrLogin.lastCheckedAt }}</span>
-            </div>
-            <el-alert
-              :title="qrStatusMessage"
-              :type="qrMessageAlertType"
-              show-icon
-              :closable="false"
-              class="qr-message-alert"
-            />
-            <div v-if="qrLogin.qrImageDataUrl" class="qr-preview">
-              <img :src="qrLogin.qrImageDataUrl" alt="Bilibili 登录二维码" />
-            </div>
-            <div class="button-row">
-              <el-button type="primary" :icon="CirclePlus" :loading="loading || qrLogin.polling" @click="startQRLogin">
-                生成二维码
-              </el-button>
-              <el-button :icon="Check" :disabled="loading || qrLogin.polling || !qrLogin.qrcodeKey" @click="pollQRLogin">
-                检查登录
-              </el-button>
-            </div>
-          </section>
-
-          <el-form class="panel form-panel" label-position="top" @submit.prevent="submitAccountPanel">
-            <div class="panel-heading">
-              <h3>{{ editingAccountId ? '编辑账号' : '新增账号' }}</h3>
-              <el-button :icon="Close" text @click="resetAccountForm">清空</el-button>
-            </div>
-            <el-form-item label="添加方式">
-              <el-radio-group v-model="accountFormMode">
-                <el-radio-button label="direct">直接添加</el-radio-button>
-                <el-radio-button label="json">批量 JSON 导入</el-radio-button>
-              </el-radio-group>
-            </el-form-item>
-            <el-form-item v-if="accountFormMode === 'direct'" required label="账号名称">
-              <el-input v-model="accountForm.name" placeholder="例如：主账号" clearable />
-            </el-form-item>
-            <el-form-item v-if="accountFormMode === 'direct'" label="Cookie">
-              <el-input v-model="accountForm.cookie" type="textarea" :rows="5" placeholder="仅保存在本地 SQLite" />
-            </el-form-item>
-            <el-form-item v-if="accountFormMode === 'direct'" label="备注">
-              <el-input v-model="accountForm.note" placeholder="可填写实名人或用途备注" clearable />
-            </el-form-item>
-            <el-form-item v-if="accountFormMode === 'json'" label="批量 JSON 导入">
-              <el-input
-                v-model="accountImportJSON"
-                type="textarea"
-                :rows="5"
-                placeholder='{"accounts":[{"name":"主账号","cookie":"SESSDATA=xxx","note":"个人使用"}]}'
-              />
-            </el-form-item>
-            <div class="button-row">
-              <el-button v-if="accountFormMode === 'direct'" native-type="submit" type="primary" :icon="Document" :loading="loading">
-                保存账号
-              </el-button>
-              <el-button v-if="accountFormMode === 'direct'" :icon="Check" :disabled="loading || !accountForm.cookie" @click="loginWithCookie">
-                验证并保存
-              </el-button>
-              <el-button v-if="accountFormMode === 'json'" type="primary" :icon="Upload" :disabled="loading || !accountImportJSON.trim()" @click="importAccount">
-                批量导入账号 JSON
-              </el-button>
-            </div>
-          </el-form>
-        </div>
-
+      <section v-if="activeSection === 'accounts'" class="stack-column">
         <section class="panel list-panel">
           <div class="panel-heading">
             <div>
@@ -2985,6 +2818,31 @@ onUnmounted(() => {
             <el-button type="primary" :icon="Download" :loading="loading" :disabled="selectedAccountExportCount === 0" @click="exportSelectedAccounts">
               导出选中
             </el-button>
+          </div>
+        </template>
+      </el-dialog>
+
+      <el-dialog
+        v-model="accountEditDialogVisible"
+        title="编辑账号"
+        width="min(520px, calc(100vw - 32px))"
+        class="account-edit-dialog"
+      >
+        <el-form label-position="top" @submit.prevent="saveAccount">
+          <el-form-item required label="账号名称">
+            <el-input v-model="accountForm.name" placeholder="例如：主账号" clearable />
+          </el-form-item>
+          <el-form-item label="Cookie">
+            <el-input v-model="accountForm.cookie" type="textarea" :rows="5" placeholder="仅保存在本地 SQLite" />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="accountForm.note" placeholder="可填写实名人或用途备注" clearable />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <div class="dialog-footer-actions">
+            <el-button :disabled="loading" @click="accountEditDialogVisible = false">取消</el-button>
+            <el-button type="primary" :icon="Document" :loading="loading" @click="saveAccount">保存账号</el-button>
           </div>
         </template>
       </el-dialog>

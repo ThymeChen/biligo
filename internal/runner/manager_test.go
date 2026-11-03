@@ -24,6 +24,8 @@ import (
 	"github.com/fdcs99/biligo/internal/timesync"
 )
 
+const testOwnerUID = int64(1001)
+
 type fakeTimeSync struct {
 	result timesync.Result
 	err    error
@@ -565,7 +567,7 @@ func TestRunnerLogsHotProjectPreSaleCheckWhenStateUnchanged(t *testing.T) {
 	if infoCalls.Load() != 1 {
 		t.Fatalf("project info calls = %d, want 1", infoCalls.Load())
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -680,7 +682,7 @@ func TestRunnerPullsAPIProxyBeforeOrderWhenSaleAlreadyStarted(t *testing.T) {
 
 	taskStore, task := createRunnableTask(t)
 	defer taskStore.Close()
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name:        "API 代理组",
 		Type:        model.ProxyGroupTypeAPI,
 		APIProvider: model.ProxyProviderKuaidailiDPS,
@@ -711,7 +713,7 @@ func TestRunnerPullsAPIProxyBeforeOrderWhenSaleAlreadyStarted(t *testing.T) {
 	if prepareCalls.Load() == 0 {
 		t.Fatal("order flow did not use pulled proxy node")
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -783,7 +785,7 @@ func TestRunnerPullsAPIProxyMultipleTimesBeforeOrder(t *testing.T) {
 
 	taskStore, task := createRunnableTask(t)
 	defer taskStore.Close()
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name:        "API 代理组",
 		Type:        model.ProxyGroupTypeAPI,
 		APIProvider: model.ProxyProviderKuaidailiDPS,
@@ -845,7 +847,7 @@ func TestProxyRuntimePullTimesRetriesFailures(t *testing.T) {
 
 	taskStore, task := createRunnableTask(t)
 	defer taskStore.Close()
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name:        "API 代理组",
 		Type:        model.ProxyGroupTypeAPI,
 		APIProvider: model.ProxyProviderKuaidailiDPS,
@@ -869,7 +871,7 @@ func TestProxyRuntimePullTimesRetriesFailures(t *testing.T) {
 	if len(runtime.nodes) != 2 {
 		t.Fatalf("runtime nodes = %#v, want 2", runtime.nodes)
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -898,7 +900,7 @@ func TestProxyRuntimePullTimesFailsAfterThreeAttemptsPerTarget(t *testing.T) {
 
 	taskStore, task := createRunnableTask(t)
 	defer taskStore.Close()
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name:        "API 代理组",
 		Type:        model.ProxyGroupTypeAPI,
 		APIProvider: model.ProxyProviderKuaidailiDPS,
@@ -940,7 +942,7 @@ func TestRunnerSendsNotificationOnWaitingPayment(t *testing.T) {
 
 	taskStore, task := createRunnableTask(t)
 	defer taskStore.Close()
-	if _, err := taskStore.CreateNotification(context.Background(), model.NotificationInput{
+	if _, err := taskStore.CreateNotification(context.Background(), testOwnerUID, model.NotificationInput{
 		Name:     "PushPlus",
 		Provider: model.NotificationProviderPushPlus,
 		Config:   map[string]string{"token": "push-token"},
@@ -964,7 +966,7 @@ func TestRunnerSendsNotificationOnWaitingPayment(t *testing.T) {
 		t.Fatalf("OrderID = %q, want ORDER-1", updated.OrderID)
 	}
 	waitForNotificationCalls(t, sender, 1)
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -1197,7 +1199,7 @@ func TestRunnerSuperModeSwitchesBaseURLOnCreateRiskCode(t *testing.T) {
 	if secondPrepareCalls.Load() != 1 || secondCreateCalls.Load() != 1 {
 		t.Fatalf("second server calls prepare/create = %d/%d, want 1/1", secondPrepareCalls.Load(), secondCreateCalls.Load())
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -1354,7 +1356,7 @@ func TestRunnerSuperModeSwitchesBaseURLOnCreateHTTP412(t *testing.T) {
 	if secondPrepareCalls.Load() != 1 || secondCreateCalls.Load() != 1 {
 		t.Fatalf("second server calls prepare/create = %d/%d, want 1/1", secondPrepareCalls.Load(), secondCreateCalls.Load())
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -1443,7 +1445,7 @@ func TestRunnerSuperModeSwitchesBaseURLOnCreateBodyRiskCode(t *testing.T) {
 	if secondPrepareCalls.Load() != 1 || secondCreateCalls.Load() != 1 {
 		t.Fatalf("second server calls prepare/create = %d/%d, want 1/1", secondPrepareCalls.Load(), secondCreateCalls.Load())
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -1530,7 +1532,7 @@ func TestRestockModeSuperModeSwitchesBaseURLOnCreateRiskCode(t *testing.T) {
 	if secondPrepareCalls.Load() != 1 || secondCreateCalls.Load() != 1 {
 		t.Fatalf("second server calls prepare/create = %d/%d, want 1/1", secondPrepareCalls.Load(), secondCreateCalls.Load())
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -2128,7 +2130,7 @@ func TestRestockModeLogsRepeatedStatusChecks(t *testing.T) {
 		t.Fatalf("LastMessage = %q, want %q", updated.LastMessage, expectedMessage)
 	}
 
-	logs, err := taskStore.ListTaskLogs(context.Background(), task.ID)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -2288,7 +2290,7 @@ func createRunnableTaskAtWithPollInterval(t *testing.T, saleStart time.Time, pol
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	account, err := taskStore.CreateAccountWithStatus(context.Background(), model.AccountInput{
+	account, err := taskStore.CreateAccountWithStatus(context.Background(), testOwnerUID, model.AccountInput{
 		Name:   "测试账号",
 		Cookie: "SESSDATA=test",
 	}, "logged_in")
@@ -2296,7 +2298,7 @@ func createRunnableTaskAtWithPollInterval(t *testing.T, saleStart time.Time, pol
 		taskStore.Close()
 		t.Fatalf("CreateAccountWithStatus: %v", err)
 	}
-	task, err := taskStore.CreateTask(context.Background(), model.TaskInput{
+	task, err := taskStore.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:               "测试任务",
 		AccountID:          account.ID,
 		ProjectID:          1001701,
@@ -2326,7 +2328,7 @@ func createRunnableTaskAtWithPollInterval(t *testing.T, saleStart time.Time, pol
 
 func createProxyGroupForRunner(t *testing.T, taskStore *store.Store, proxyURLs ...string) int64 {
 	t.Helper()
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name: "代理组",
 		Type: model.ProxyGroupTypeStatic,
 	})
@@ -2469,7 +2471,7 @@ func createRestockTaskWithTickets(t *testing.T, durationMode string, endAt strin
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	account, err := taskStore.CreateAccountWithStatus(context.Background(), model.AccountInput{
+	account, err := taskStore.CreateAccountWithStatus(context.Background(), testOwnerUID, model.AccountInput{
 		Name:   "测试账号",
 		Cookie: "SESSDATA=test",
 	}, "logged_in")
@@ -2477,7 +2479,7 @@ func createRestockTaskWithTickets(t *testing.T, durationMode string, endAt strin
 		taskStore.Close()
 		t.Fatalf("CreateAccountWithStatus: %v", err)
 	}
-	task, err := taskStore.CreateTask(context.Background(), model.TaskInput{
+	task, err := taskStore.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:               "回流捡漏任务",
 		AccountID:          account.ID,
 		ProjectID:          1001701,
@@ -2519,7 +2521,7 @@ func createHybridTaskAt(t *testing.T, saleStart time.Time, rushDurationSeconds i
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	account, err := taskStore.CreateAccountWithStatus(context.Background(), model.AccountInput{
+	account, err := taskStore.CreateAccountWithStatus(context.Background(), testOwnerUID, model.AccountInput{
 		Name:   "测试账号",
 		Cookie: "SESSDATA=test",
 	}, "logged_in")
@@ -2527,7 +2529,7 @@ func createHybridTaskAt(t *testing.T, saleStart time.Time, rushDurationSeconds i
 		taskStore.Close()
 		t.Fatalf("CreateAccountWithStatus: %v", err)
 	}
-	task, err := taskStore.CreateTask(context.Background(), model.TaskInput{
+	task, err := taskStore.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:                      "组合任务",
 		AccountID:                 account.ID,
 		ProjectID:                 1001701,

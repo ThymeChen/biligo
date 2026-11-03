@@ -66,6 +66,7 @@ type SessionSummary struct {
 
 type Account struct {
 	ID            int64  `json:"id"`
+	OwnerUID      int64  `json:"ownerUid"`
 	Name          string `json:"name"`
 	CookiePreview string `json:"cookiePreview"`
 	HasCookie     bool   `json:"hasCookie"`
@@ -122,32 +123,19 @@ type QRLoginStartResponse struct {
 }
 
 type QRLoginPollInput struct {
-	QRCodeKey   string `json:"qrcodeKey"`
-	AccountName string `json:"accountName"`
-	Note        string `json:"note"`
+	QRCodeKey string `json:"qrcodeKey"`
 }
 
 type QRLoginPollResponse struct {
-	OK       bool     `json:"ok"`
-	Status   string   `json:"status"`
-	Message  string   `json:"message"`
-	Code     int      `json:"code,omitempty"`
-	Username string   `json:"username,omitempty"`
-	Account  *Account `json:"account,omitempty"`
-}
-
-type CookieLoginInput struct {
-	Name   string `json:"name"`
-	Cookie string `json:"cookie"`
-	Note   string `json:"note"`
-}
-
-type CookieLoginResponse struct {
-	OK       bool     `json:"ok"`
-	LoggedIn bool     `json:"loggedIn"`
-	Username string   `json:"username,omitempty"`
-	Message  string   `json:"message"`
-	Account  *Account `json:"account,omitempty"`
+	OK        bool         `json:"ok"`
+	Status    string       `json:"status"`
+	Message   string       `json:"message"`
+	Code      int          `json:"code,omitempty"`
+	Username  string       `json:"username,omitempty"`
+	Token     string       `json:"token,omitempty"`
+	User      *UserSession `json:"user,omitempty"`
+	ExpiresAt string       `json:"expiresAt,omitempty"`
+	Account   *Account     `json:"account,omitempty"`
 }
 
 type AccountVerifyResponse struct {
@@ -159,17 +147,20 @@ type AccountVerifyResponse struct {
 	Account   *Account `json:"account,omitempty"`
 }
 
-type PanelLoginInput struct {
-	Password string `json:"password"`
+type UserSession struct {
+	UID      int64  `json:"uid"`
+	Username string `json:"username"`
 }
 
-type PanelAuthResponse struct {
-	Token     string `json:"token,omitempty"`
-	ExpiresAt string `json:"expiresAt"`
+type UserAuthResponse struct {
+	Token     string       `json:"token,omitempty"`
+	ExpiresAt string       `json:"expiresAt"`
+	User      *UserSession `json:"user,omitempty"`
 }
 
 type Notification struct {
 	ID              int64             `json:"id"`
+	OwnerUID        int64             `json:"ownerUid"`
 	Name            string            `json:"name"`
 	Provider        string            `json:"provider"`
 	Config          map[string]string `json:"config"`
@@ -189,6 +180,7 @@ type NotificationInput struct {
 
 type ProxyGroup struct {
 	ID                 int64             `json:"id"`
+	OwnerUID           int64             `json:"ownerUid"`
 	Name               string            `json:"name"`
 	Type               string            `json:"type"`
 	APIProvider        string            `json:"apiProvider"`
@@ -326,6 +318,7 @@ type TicketAddress struct {
 
 type Task struct {
 	ID                        int64          `json:"id"`
+	OwnerUID                  int64          `json:"ownerUid"`
 	Name                      string         `json:"name"`
 	AccountID                 int64          `json:"accountId"`
 	AccountName               string         `json:"accountName"`
@@ -505,6 +498,7 @@ type BWSMyReservation struct {
 
 type BWSTask struct {
 	ID                 int64  `json:"id"`
+	OwnerUID           int64  `json:"ownerUid"`
 	Name               string `json:"name"`
 	AccountID          int64  `json:"accountId"`
 	AccountName        string `json:"accountName"`

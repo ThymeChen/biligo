@@ -23,10 +23,10 @@ import (
 	"github.com/fdcs99/biligo/internal/events"
 	"github.com/fdcs99/biligo/internal/model"
 	"github.com/fdcs99/biligo/internal/notify"
-	"github.com/fdcs99/biligo/internal/panelauth"
 	proxynet "github.com/fdcs99/biligo/internal/proxy"
 	"github.com/fdcs99/biligo/internal/runner"
 	"github.com/fdcs99/biligo/internal/store"
+	"github.com/fdcs99/biligo/internal/userauth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -38,7 +38,7 @@ type Handler struct {
 	hub       *events.Hub
 	runner    *runner.Manager
 	bwsRunner *bwsrunner.Manager
-	panel     *panelauth.Manager
+	user      *userauth.Manager
 	logger    *applog.Logger
 	notify    notify.Sender
 }
@@ -73,11 +73,11 @@ func WithNotificationSender(sender notify.Sender) RouterOption {
 	}
 }
 
-func NewRouter(store *store.Store, panel *panelauth.Manager, logger *applog.Logger, opts ...RouterOption) *gin.Engine {
-	return NewRuntime(store, panel, logger, opts...).Router
+func NewRouter(store *store.Store, user *userauth.Manager, logger *applog.Logger, opts ...RouterOption) *gin.Engine {
+	return NewRuntime(store, user, logger, opts...).Router
 }
 
-func NewRuntime(store *store.Store, panel *panelauth.Manager, logger *applog.Logger, opts ...RouterOption) Runtime {
+func NewRuntime(store *store.Store, user *userauth.Manager, logger *applog.Logger, opts ...RouterOption) Runtime {
 	gin.SetMode(gin.ReleaseMode)
 	var options RouterOptions
 	for _, opt := range opts {
@@ -87,11 +87,17 @@ func NewRuntime(store *store.Store, panel *panelauth.Manager, logger *applog.Log
 	router := gin.New()
 	router.Use(devCORS())
 	router.Use(recovery(logger))
-	if panel == nil {
-		panel = panelauth.NewManager("", 24*time.Hour)
+	if user == nil {
+		user = userauth.NewManager(24 * time.Hour)
 	}
 
 	hub := events.NewHub(logger)
+	hub.SetTaskOwnerLookup(func(ctx context.Context, kind string, taskID int64) (int64, error) {
+		if kind == "bws" {
+			return store.GetBWSTaskOwnerUID(ctx, taskID)
+		}
+		return store.GetTaskOwnerUID(ctx, taskID)
+	})
 	ticket := biliticket.NewClient(nil)
 	bwsClient := bws.NewClient(nil)
 	notificationSender := options.NotificationSender
@@ -109,26 +115,24 @@ func NewRuntime(store *store.Store, panel *panelauth.Manager, logger *applog.Log
 		hub:       hub,
 		runner:    runnerManager,
 		bwsRunner: bwsRunnerManager,
-		panel:     panel,
+		user:      user,
 		logger:    logger,
 		notify:    notificationSender,
 	}
 	api := router.Group("/api")
 	{
 		api.GET("/health", handler.health)
-		api.POST("/panel-auth/login", handler.panelLogin)
+		api.POST("/user-auth/qr/start", handler.userQRStart)
+		api.POST("/user-auth/qr/poll", handler.userQRPoll)
 
 		protected := api.Group("")
-		protected.Use(handler.requirePanelAuth())
+		protected.Use(handler.requireUserAuth())
 		{
-			protected.GET("/panel-auth/session", handler.panelSession)
-			protected.POST("/panel-auth/logout", handler.panelLogout)
+			protected.GET("/user-auth/session", handler.userSession)
+			protected.POST("/user-auth/logout", handler.userLogout)
 
 			protected.GET("/events", handler.events)
 			protected.GET("/auth/session", handler.sessionSummary)
-			protected.POST("/auth/qr/start", handler.startQRLogin)
-			protected.POST("/auth/qr/poll", handler.pollQRLogin)
-			protected.POST("/auth/cookie-login", handler.cookieLogin)
 
 			protected.GET("/accounts", handler.listAccounts)
 			protected.POST("/accounts", handler.createAccount)
@@ -271,71 +275,86 @@ func (h *Handler) health(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
-func (h *Handler) panelLogin(c *gin.Context) {
-	var input model.PanelLoginInput
-	if !bindJSON(c, &input) {
-		return
+func (h *Handler) requireUserAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := userTokenFromRequest(c)
+		user, expiresAt, ok := h.user.Validate(token)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "登录已失效，请重新登录"})
+			return
+		}
+		c.Set("userID", user.UID)
+		c.Set("username", user.Username)
+		c.Set("userAuthExpiresAt", expiresAt)
+		c.Next()
 	}
-	token, expiresAt, ok, err := h.panel.Login(input.Password)
-	if err != nil {
-		respondError(c, err)
-		return
-	}
+}
+
+func (h *Handler) userSession(c *gin.Context) {
+	expiresAt, _ := c.Get("userAuthExpiresAt")
+	value, ok := expiresAt.(time.Time)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "面板密码错误"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "登录已失效"})
 		return
 	}
-	if h.logger != nil {
-		h.logger.Infof("面板登录成功，客户端 %s，token 有效期至 %s。", clientIP(c), expiresAt.Format(time.RFC3339))
-	}
-	c.JSON(http.StatusOK, model.PanelAuthResponse{
-		Token:     token,
-		ExpiresAt: expiresAt.Format(time.RFC3339),
+	c.JSON(http.StatusOK, model.UserAuthResponse{
+		ExpiresAt: value.Format(time.RFC3339),
+		User: &model.UserSession{
+			UID:      ownerUIDFromContext(c),
+			Username: usernameFromContext(c),
+		},
 	})
 }
 
-func (h *Handler) panelSession(c *gin.Context) {
-	expiresAt, _ := c.Get("panelAuthExpiresAt")
-	if value, ok := expiresAt.(time.Time); ok {
-		c.JSON(http.StatusOK, model.PanelAuthResponse{
-			ExpiresAt: value.Format(time.RFC3339),
-		})
-		return
-	}
-	c.JSON(http.StatusUnauthorized, gin.H{"error": "面板登录已失效"})
-}
-
-func (h *Handler) panelLogout(c *gin.Context) {
-	revoked := h.panel.Revoke(panelTokenFromRequest(c))
+func (h *Handler) userLogout(c *gin.Context) {
+	revoked := h.user.Revoke(userTokenFromRequest(c))
 	if h.logger != nil {
 		if revoked {
-			h.logger.Infof("面板退出登录成功，客户端 %s。", clientIP(c))
+			h.logger.Infof("用户退出登录成功，客户端 %s。", clientIP(c))
 		} else {
-			h.logger.Warnf("面板退出登录请求未匹配有效 token，客户端 %s。", clientIP(c))
+			h.logger.Warnf("用户退出登录请求未匹配有效 token，客户端 %s。", clientIP(c))
 		}
 	}
 	c.Status(http.StatusNoContent)
 }
 
-func (h *Handler) requirePanelAuth() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		token := panelTokenFromRequest(c)
-		expiresAt, ok := h.panel.Validate(token)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "面板登录已失效，请重新登录"})
-			return
-		}
-		c.Set("panelAuthExpiresAt", expiresAt)
-		c.Next()
-	}
-}
-
-func panelTokenFromRequest(c *gin.Context) string {
+func userTokenFromRequest(c *gin.Context) string {
 	authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		return strings.TrimSpace(authHeader[len("bearer "):])
 	}
 	return strings.TrimSpace(c.Query("token"))
+}
+
+func ownerUIDFromContext(c *gin.Context) int64 {
+	if value, ok := c.Get("userID"); ok {
+		if uid, ok := value.(int64); ok {
+			return uid
+		}
+	}
+	return 0
+}
+
+func usernameFromContext(c *gin.Context) string {
+	if value, ok := c.Get("username"); ok {
+		if name, ok := value.(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+func (h *Handler) requireResourceOwner(c *gin.Context, lookup func(context.Context, int64) (int64, error), id int64) bool {
+	ownerUID, err := lookup(c.Request.Context(), id)
+	if err != nil {
+		respondError(c, err)
+		return false
+	}
+	if ownerUID != ownerUIDFromContext(c) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "资源不存在"})
+		return false
+	}
+	return true
 }
 
 func clientIP(c *gin.Context) string {
@@ -355,13 +374,14 @@ func (h *Handler) events(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	id, ch := h.hub.Subscribe()
+	id, ch := h.hub.SubscribeForOwner(ownerUIDFromContext(c))
 	defer h.hub.Unsubscribe(id)
 
-	tasks, taskErr := h.store.ListTasks(c.Request.Context())
-	logs, logErr := h.store.ListTaskLogs(c.Request.Context(), 0)
-	bwsTasks, bwsTaskErr := h.store.ListBWSTasks(c.Request.Context())
-	bwsLogs, bwsLogErr := h.store.ListBWSTaskLogs(c.Request.Context(), 0)
+	ownerUID := ownerUIDFromContext(c)
+	tasks, taskErr := h.store.ListTasks(c.Request.Context(), ownerUID)
+	logs, logErr := h.store.ListTaskLogs(c.Request.Context(), ownerUID, 0)
+	bwsTasks, bwsTaskErr := h.store.ListBWSTasks(c.Request.Context(), ownerUID)
+	bwsLogs, bwsLogErr := h.store.ListBWSTaskLogs(c.Request.Context(), ownerUID, 0)
 	if taskErr == nil && logErr == nil && bwsTaskErr == nil && bwsLogErr == nil {
 		writeSSE(c, "snapshot", model.EventSnapshot{Tasks: tasks, Logs: logs, BWSTasks: bwsTasks, BWSTaskLogs: bwsLogs})
 	}
@@ -386,7 +406,7 @@ func (h *Handler) events(c *gin.Context) {
 }
 
 func (h *Handler) sessionSummary(c *gin.Context) {
-	summary, err := h.store.SessionSummary(c.Request.Context())
+	summary, err := h.store.SessionSummary(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -394,7 +414,7 @@ func (h *Handler) sessionSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, summary)
 }
 
-func (h *Handler) startQRLogin(c *gin.Context) {
+func (h *Handler) userQRStart(c *gin.Context) {
 	result, err := h.auth.StartQRLogin(c.Request.Context())
 	if err != nil {
 		respondError(c, err)
@@ -411,7 +431,7 @@ func (h *Handler) startQRLogin(c *gin.Context) {
 	})
 }
 
-func (h *Handler) pollQRLogin(c *gin.Context) {
+func (h *Handler) userQRPoll(c *gin.Context) {
 	var input model.QRLoginPollInput
 	if !bindJSON(c, &input) {
 		return
@@ -434,76 +454,54 @@ func (h *Handler) pollQRLogin(c *gin.Context) {
 		Code:     result.Code,
 		Username: result.Username,
 	}
-	if result.Status == "confirmed" && result.Cookie != "" {
-		name := strings.TrimSpace(input.AccountName)
-		if name == "" {
-			name = firstNonEmpty(result.Username, "Bilibili 账号")
-		}
-		account, err := h.store.CreateAccountWithStatus(c.Request.Context(), model.AccountInput{
-			Name:   name,
-			Cookie: result.Cookie,
-			Note:   input.Note,
-		}, "logged_in")
-		if err != nil {
-			respondError(c, err)
-			return
-		}
-		response.Account = &account
+	if result.Status != "confirmed" || result.Cookie == "" || result.UID <= 0 {
+		c.JSON(http.StatusOK, response)
+		return
 	}
 
+	if err := h.store.UpsertUser(c.Request.Context(), result.UID, result.Username, result.Cookie); err != nil {
+		respondError(c, err)
+		return
+	}
+	account, err := h.store.GetAccountByOwner(c.Request.Context(), result.UID)
+	if errors.Is(err, sql.ErrNoRows) {
+		account, err = h.store.CreateAccountWithStatus(c.Request.Context(), result.UID, model.AccountInput{
+			Name:   firstNonEmpty(result.Username, "Bilibili 账号"),
+			Cookie: result.Cookie,
+		}, "logged_in")
+	} else if err == nil {
+		account, err = h.store.UpdateAccount(c.Request.Context(), account.ID, model.AccountInput{
+			Name:   firstNonEmpty(account.Name, result.Username, "Bilibili 账号"),
+			Cookie: result.Cookie,
+			Note:   account.Note,
+		})
+		if err == nil {
+			account, err = h.store.UpdateAccountStatus(c.Request.Context(), account.ID, "logged_in")
+		}
+	}
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	token, expiresAt, err := h.user.Login(userauth.User{UID: result.UID, Username: result.Username})
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	if h.logger != nil {
+		h.logger.Infof("用户登录成功：UID %d（%s），客户端 %s，token 有效期至 %s。", result.UID, result.Username, clientIP(c), expiresAt.Format(time.RFC3339))
+	}
+
+	response.Token = token
+	response.User = &model.UserSession{UID: result.UID, Username: result.Username}
+	response.ExpiresAt = expiresAt.Format(time.RFC3339)
+	response.Account = &account
 	c.JSON(http.StatusOK, response)
 }
 
-func (h *Handler) cookieLogin(c *gin.Context) {
-	var input model.CookieLoginInput
-	if !bindJSON(c, &input) {
-		return
-	}
-	if strings.TrimSpace(input.Cookie) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cookie 不能为空"})
-		return
-	}
-
-	cookie := biliauth.NormalizeCookieHeader(input.Cookie)
-	username, loggedIn, err := h.auth.VerifyCookie(c.Request.Context(), cookie)
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	if !loggedIn {
-		c.JSON(http.StatusOK, model.CookieLoginResponse{
-			OK:       false,
-			LoggedIn: false,
-			Message:  "Cookie 未通过 Bilibili 登录态验证。",
-		})
-		return
-	}
-
-	name := strings.TrimSpace(input.Name)
-	if name == "" {
-		name = username
-	}
-	account, err := h.store.CreateAccountWithStatus(c.Request.Context(), model.AccountInput{
-		Name:   name,
-		Cookie: cookie,
-		Note:   input.Note,
-	}, "logged_in")
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-
-	c.JSON(http.StatusCreated, model.CookieLoginResponse{
-		OK:       true,
-		LoggedIn: true,
-		Username: username,
-		Message:  "登录态验证成功，账号已保存。",
-		Account:  &account,
-	})
-}
-
 func (h *Handler) listAccounts(c *gin.Context) {
-	accounts, err := h.store.ListAccounts(c.Request.Context())
+	accounts, err := h.store.ListAccounts(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -516,7 +514,7 @@ func (h *Handler) createAccount(c *gin.Context) {
 	if !bindJSON(c, &input) || !requireName(c, input.Name, "账号名称不能为空") {
 		return
 	}
-	account, err := h.store.CreateAccount(c.Request.Context(), input)
+	account, err := h.store.CreateAccount(c.Request.Context(), ownerUIDFromContext(c), input)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -529,7 +527,7 @@ func (h *Handler) exportAccounts(c *gin.Context) {
 	if !bindJSON(c, &input) || !validateAccountBatchExportInput(c, input) {
 		return
 	}
-	accounts, err := h.store.ExportAccounts(c.Request.Context(), input.AccountIDs)
+	accounts, err := h.store.ExportAccounts(c.Request.Context(), ownerUIDFromContext(c), input.AccountIDs)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -546,7 +544,7 @@ func (h *Handler) importAccounts(c *gin.Context) {
 	if !ok || !validateAccountImportInput(c, accountInputs) {
 		return
 	}
-	accounts, err := h.store.ImportAccounts(c.Request.Context(), accountInputs)
+	accounts, err := h.store.ImportAccounts(c.Request.Context(), ownerUIDFromContext(c), accountInputs)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -561,6 +559,9 @@ func (h *Handler) importAccounts(c *gin.Context) {
 func (h *Handler) updateAccount(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, id) {
 		return
 	}
 	var input model.AccountInput
@@ -578,6 +579,9 @@ func (h *Handler) updateAccount(c *gin.Context) {
 func (h *Handler) accountCookie(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, id) {
 		return
 	}
 
@@ -603,6 +607,9 @@ func (h *Handler) verifyAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, id) {
+		return
+	}
 
 	_, cookie, err := h.store.GetAccountCookie(c.Request.Context(), id)
 	if err != nil {
@@ -614,7 +621,7 @@ func (h *Handler) verifyAccount(c *gin.Context) {
 		return
 	}
 
-	username, loggedIn, err := h.auth.VerifyCookie(c.Request.Context(), cookie)
+	_, username, loggedIn, err := h.auth.VerifyCookie(c.Request.Context(), cookie)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -647,6 +654,9 @@ func (h *Handler) deleteAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, id) {
+		return
+	}
 	if err := h.store.DeleteAccount(c.Request.Context(), id); err != nil {
 		respondError(c, err)
 		return
@@ -655,7 +665,7 @@ func (h *Handler) deleteAccount(c *gin.Context) {
 }
 
 func (h *Handler) listTicketProjectHistory(c *gin.Context) {
-	history, err := h.store.ListTicketProjectHistory(c.Request.Context())
+	history, err := h.store.ListTicketProjectHistory(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -682,7 +692,7 @@ func (h *Handler) fetchTicketProject(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	if err := h.store.UpsertTicketProjectHistory(c.Request.Context(), project); err != nil {
+	if err := h.store.UpsertTicketProjectHistory(c.Request.Context(), ownerUIDFromContext(c), project); err != nil {
 		respondError(c, err)
 		return
 	}
@@ -707,6 +717,9 @@ func (h *Handler) fetchTicketAccountContext(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, input.AccountID) {
+		return
+	}
 	_, cookie, err := h.store.GetAccountCookie(c.Request.Context(), input.AccountID)
 	if err != nil {
 		respondError(c, err)
@@ -726,7 +739,7 @@ func (h *Handler) fetchTicketAccountContext(c *gin.Context) {
 }
 
 func (h *Handler) listNotifications(c *gin.Context) {
-	notifications, err := h.store.ListNotifications(c.Request.Context())
+	notifications, err := h.store.ListNotifications(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -739,7 +752,7 @@ func (h *Handler) createNotification(c *gin.Context) {
 	if !bindJSON(c, &input) || !validateNotificationInput(c, input) {
 		return
 	}
-	notification, err := h.store.CreateNotification(c.Request.Context(), input)
+	notification, err := h.store.CreateNotification(c.Request.Context(), ownerUIDFromContext(c), input)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -750,6 +763,9 @@ func (h *Handler) createNotification(c *gin.Context) {
 func (h *Handler) updateNotification(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetNotificationOwnerUID, id) {
 		return
 	}
 	var input model.NotificationInput
@@ -769,6 +785,9 @@ func (h *Handler) deleteNotification(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetNotificationOwnerUID, id) {
+		return
+	}
 	if err := h.store.DeleteNotification(c.Request.Context(), id); err != nil {
 		respondError(c, err)
 		return
@@ -779,6 +798,9 @@ func (h *Handler) deleteNotification(c *gin.Context) {
 func (h *Handler) testNotification(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetNotificationOwnerUID, id) {
 		return
 	}
 	notification, err := h.store.GetNotification(c.Request.Context(), id)
@@ -812,6 +834,9 @@ func (h *Handler) enableNotification(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetNotificationOwnerUID, id) {
+		return
+	}
 	notification, err := h.store.SetNotificationEnabled(c.Request.Context(), id, true)
 	if err != nil {
 		respondError(c, err)
@@ -825,6 +850,9 @@ func (h *Handler) disableNotification(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetNotificationOwnerUID, id) {
+		return
+	}
 	notification, err := h.store.SetNotificationEnabled(c.Request.Context(), id, false)
 	if err != nil {
 		respondError(c, err)
@@ -834,7 +862,7 @@ func (h *Handler) disableNotification(c *gin.Context) {
 }
 
 func (h *Handler) listProxyGroups(c *gin.Context) {
-	groups, err := h.store.ListProxyGroups(c.Request.Context())
+	groups, err := h.store.ListProxyGroups(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -847,7 +875,7 @@ func (h *Handler) createProxyGroup(c *gin.Context) {
 	if !bindJSON(c, &input) || !validateProxyGroupInput(c, input) {
 		return
 	}
-	group, err := h.store.CreateProxyGroup(c.Request.Context(), input)
+	group, err := h.store.CreateProxyGroup(c.Request.Context(), ownerUIDFromContext(c), input)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -893,6 +921,9 @@ func (h *Handler) deleteProxyGroup(c *gin.Context) {
 func (h *Handler) listProxyNodes(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetProxyGroupOwnerUID, id) {
 		return
 	}
 	nodes, err := h.store.ListProxyNodes(c.Request.Context(), id)
@@ -1073,6 +1104,9 @@ func (h *Handler) testProxyGroupNodes(ctx context.Context, groupID int64) (model
 }
 
 func (h *Handler) requireProxyGroupEditable(c *gin.Context, id int64) bool {
+	if !h.requireResourceOwner(c, h.store.GetProxyGroupOwnerUID, id) {
+		return false
+	}
 	inUse, err := h.store.ProxyGroupInUse(c.Request.Context(), id)
 	if err != nil {
 		respondError(c, err)
@@ -1086,7 +1120,7 @@ func (h *Handler) requireProxyGroupEditable(c *gin.Context, id int64) bool {
 }
 
 func (h *Handler) listTasks(c *gin.Context) {
-	tasks, err := h.store.ListTasks(c.Request.Context())
+	tasks, err := h.store.ListTasks(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -1099,13 +1133,27 @@ func (h *Handler) createTask(c *gin.Context) {
 	if !bindJSON(c, &input) || !requireName(c, input.Name, "任务名称不能为空") || !validateTaskInput(c, input) {
 		return
 	}
-	task, err := h.store.CreateTask(c.Request.Context(), input)
+	if !h.requireTaskResourcesOwned(c, input.AccountID, input.ProxyGroupID) {
+		return
+	}
+	ownerUID := ownerUIDFromContext(c)
+	task, err := h.store.CreateTask(c.Request.Context(), ownerUID, input)
 	if err != nil {
 		respondError(c, err)
 		return
 	}
-	h.hub.Publish("task.updated", task)
+	h.hub.PublishForOwner("task.updated", task, ownerUID)
 	c.JSON(http.StatusCreated, task)
+}
+
+func (h *Handler) requireTaskResourcesOwned(c *gin.Context, accountID int64, proxyGroupID int64) bool {
+	if accountID > 0 && !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, accountID) {
+		return false
+	}
+	if proxyGroupID > 0 && !h.requireResourceOwner(c, h.store.GetProxyGroupOwnerUID, proxyGroupID) {
+		return false
+	}
+	return true
 }
 
 func (h *Handler) updateTask(c *gin.Context) {
@@ -1113,16 +1161,23 @@ func (h *Handler) updateTask(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetTaskOwnerUID, id) {
+		return
+	}
 	var input model.TaskInput
 	if !bindJSON(c, &input) || !requireName(c, input.Name, "任务名称不能为空") || !validateTaskInput(c, input) {
 		return
 	}
+	if !h.requireTaskResourcesOwned(c, input.AccountID, input.ProxyGroupID) {
+		return
+	}
+	ownerUID := ownerUIDFromContext(c)
 	task, err := h.store.UpdateTask(c.Request.Context(), id, input)
 	if err != nil {
 		respondError(c, err)
 		return
 	}
-	h.hub.Publish("task.updated", task)
+	h.hub.PublishForOwner("task.updated", task, ownerUID)
 	c.JSON(http.StatusOK, task)
 }
 
@@ -1146,25 +1201,32 @@ func (h *Handler) deleteTask(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	h.runner.Cancel(id)
-	if err := h.store.DeleteTask(c.Request.Context(), id); err != nil {
-		respondError(c, err)
+	if task.OwnerUID != ownerUIDFromContext(c) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "资源不存在"})
 		return
 	}
+	h.runner.Cancel(id)
 	logMessage := "任务已删除。"
 	if name := strings.TrimSpace(task.Name); name != "" {
 		logMessage = fmt.Sprintf("任务已删除：%s。", name)
 	}
 	if log, err := h.store.AddTaskLog(c.Request.Context(), id, "warn", logMessage); err == nil && log.ID > 0 {
-		h.hub.Publish("log.created", log)
+		h.hub.PublishForOwner("log.created", log, task.OwnerUID)
 	}
-	h.hub.Publish("task.deleted", gin.H{"id": id})
+	if err := h.store.DeleteTask(c.Request.Context(), id); err != nil {
+		respondError(c, err)
+		return
+	}
+	h.hub.PublishForOwner("task.deleted", gin.H{"id": id}, task.OwnerUID)
 	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) dispatchTask(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetTaskOwnerUID, id) {
 		return
 	}
 	task, err := h.runner.Dispatch(c.Request.Context(), id)
@@ -1180,6 +1242,9 @@ func (h *Handler) pauseTask(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetTaskOwnerUID, id) {
+		return
+	}
 	task, err := h.runner.Pause(c.Request.Context(), id)
 	if err != nil {
 		respondTaskActionError(c, err)
@@ -1193,7 +1258,7 @@ func (h *Handler) listTaskLogs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	logs, err := h.store.ListTaskLogs(c.Request.Context(), id)
+	logs, err := h.store.ListTaskLogs(c.Request.Context(), ownerUIDFromContext(c), id)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -1208,6 +1273,9 @@ func (h *Handler) fetchBWSInfo(c *gin.Context) {
 	}
 	if input.AccountID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择账号"})
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, input.AccountID) {
 		return
 	}
 	_, cookie, err := h.store.GetAccountCookie(c.Request.Context(), input.AccountID)
@@ -1230,6 +1298,9 @@ func (h *Handler) fetchBWSMyReservations(c *gin.Context) {
 		return
 	}
 	year := strings.TrimSpace(c.Query("year"))
+	if !h.requireResourceOwner(c, h.store.GetAccountOwnerUID, accountID) {
+		return
+	}
 	_, cookie, err := h.store.GetAccountCookie(c.Request.Context(), accountID)
 	if err != nil {
 		respondError(c, err)
@@ -1244,7 +1315,7 @@ func (h *Handler) fetchBWSMyReservations(c *gin.Context) {
 }
 
 func (h *Handler) listBWSTasks(c *gin.Context) {
-	tasks, err := h.store.ListBWSTasks(c.Request.Context())
+	tasks, err := h.store.ListBWSTasks(c.Request.Context(), ownerUIDFromContext(c))
 	if err != nil {
 		respondError(c, err)
 		return
@@ -1257,12 +1328,16 @@ func (h *Handler) createBWSTask(c *gin.Context) {
 	if !bindJSON(c, &input) || !requireName(c, input.Name, "BWS 任务名称不能为空") || !validateBWSTaskInput(c, input) {
 		return
 	}
-	task, err := h.store.CreateBWSTask(c.Request.Context(), input)
+	if !h.requireTaskResourcesOwned(c, input.AccountID, input.ProxyGroupID) {
+		return
+	}
+	ownerUID := ownerUIDFromContext(c)
+	task, err := h.store.CreateBWSTask(c.Request.Context(), ownerUID, input)
 	if err != nil {
 		respondError(c, err)
 		return
 	}
-	h.hub.Publish("bws.task.updated", task)
+	h.hub.PublishForOwner("bws.task.updated", task, ownerUID)
 	c.JSON(http.StatusCreated, task)
 }
 
@@ -1271,16 +1346,23 @@ func (h *Handler) updateBWSTask(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetBWSTaskOwnerUID, id) {
+		return
+	}
 	var input model.BWSTaskInput
 	if !bindJSON(c, &input) || !requireName(c, input.Name, "BWS 任务名称不能为空") || !validateBWSTaskInput(c, input) {
 		return
 	}
+	if !h.requireTaskResourcesOwned(c, input.AccountID, input.ProxyGroupID) {
+		return
+	}
+	ownerUID := ownerUIDFromContext(c)
 	task, err := h.store.UpdateBWSTask(c.Request.Context(), id, input)
 	if err != nil {
 		respondError(c, err)
 		return
 	}
-	h.hub.Publish("bws.task.updated", task)
+	h.hub.PublishForOwner("bws.task.updated", task, ownerUID)
 	c.JSON(http.StatusOK, task)
 }
 
@@ -1330,25 +1412,32 @@ func (h *Handler) deleteBWSTask(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	h.bwsRunner.Cancel(id)
-	if err := h.store.DeleteBWSTask(c.Request.Context(), id); err != nil {
-		respondError(c, err)
+	if task.OwnerUID != ownerUIDFromContext(c) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "资源不存在"})
 		return
 	}
+	h.bwsRunner.Cancel(id)
 	logMessage := "BWS 预约任务已删除。"
 	if name := strings.TrimSpace(task.Name); name != "" {
 		logMessage = fmt.Sprintf("BWS 预约任务已删除：%s。", name)
 	}
 	if log, err := h.store.AddBWSTaskLog(c.Request.Context(), id, "warn", logMessage); err == nil && log.ID > 0 {
-		h.hub.Publish("bws.log.created", log)
+		h.hub.PublishForOwner("bws.log.created", log, task.OwnerUID)
 	}
-	h.hub.Publish("bws.task.deleted", gin.H{"id": id})
+	if err := h.store.DeleteBWSTask(c.Request.Context(), id); err != nil {
+		respondError(c, err)
+		return
+	}
+	h.hub.PublishForOwner("bws.task.deleted", gin.H{"id": id}, task.OwnerUID)
 	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) dispatchBWSTask(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
+		return
+	}
+	if !h.requireResourceOwner(c, h.store.GetBWSTaskOwnerUID, id) {
 		return
 	}
 	task, err := h.bwsRunner.Dispatch(c.Request.Context(), id)
@@ -1364,6 +1453,9 @@ func (h *Handler) pauseBWSTask(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requireResourceOwner(c, h.store.GetBWSTaskOwnerUID, id) {
+		return
+	}
 	task, err := h.bwsRunner.Pause(c.Request.Context(), id)
 	if err != nil {
 		respondTaskActionError(c, err)
@@ -1377,7 +1469,7 @@ func (h *Handler) listBWSTaskLogs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	logs, err := h.store.ListBWSTaskLogs(c.Request.Context(), id)
+	logs, err := h.store.ListBWSTaskLogs(c.Request.Context(), ownerUIDFromContext(c), id)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -1395,7 +1487,7 @@ func (h *Handler) listBWSLogs(c *gin.Context) {
 		}
 		taskID = parsed
 	}
-	logs, err := h.store.ListBWSTaskLogs(c.Request.Context(), taskID)
+	logs, err := h.store.ListBWSTaskLogs(c.Request.Context(), ownerUIDFromContext(c), taskID)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -1413,7 +1505,7 @@ func (h *Handler) listLogs(c *gin.Context) {
 		}
 		taskID = parsed
 	}
-	logs, err := h.store.ListTaskLogs(c.Request.Context(), taskID)
+	logs, err := h.store.ListTaskLogs(c.Request.Context(), ownerUIDFromContext(c), taskID)
 	if err != nil {
 		respondError(c, err)
 		return

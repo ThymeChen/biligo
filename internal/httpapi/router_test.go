@@ -16,9 +16,9 @@ import (
 
 	"github.com/fdcs99/biligo/internal/applog"
 	"github.com/fdcs99/biligo/internal/model"
-	"github.com/fdcs99/biligo/internal/panelauth"
 	proxynet "github.com/fdcs99/biligo/internal/proxy"
 	"github.com/fdcs99/biligo/internal/store"
+	"github.com/fdcs99/biligo/internal/userauth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -29,7 +29,7 @@ func TestDeleteTaskWritesLog(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	task, err := taskStore.CreateTask(context.Background(), model.TaskInput{
+	task, err := taskStore.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:               "待删除任务",
 		AccountID:          1,
 		ProjectID:          1001701,
@@ -47,8 +47,7 @@ func TestDeleteTaskWritesLog(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	router, token := newTestRouter(taskStore)
 	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/1", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp := httptest.NewRecorder()
@@ -60,7 +59,7 @@ func TestDeleteTaskWritesLog(t *testing.T) {
 	if _, err := taskStore.GetTask(context.Background(), task.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetTask err = %v, want sql.ErrNoRows", err)
 	}
-	logs, err := taskStore.ListTaskLogs(context.Background(), 0)
+	logs, err := taskStore.ListTaskLogs(context.Background(), testOwnerUID, 0)
 	if err != nil {
 		t.Fatalf("ListTaskLogs: %v", err)
 	}
@@ -72,14 +71,14 @@ func TestDeleteTaskWritesLog(t *testing.T) {
 	}
 }
 
-func TestPanelAuthProtectsAPIs(t *testing.T) {
+func TestUserAuthProtectsAPIs(t *testing.T) {
 	taskStore, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
+	router, token := newTestRouter(taskStore)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	resp := httptest.NewRecorder()
@@ -95,16 +94,6 @@ func TestPanelAuthProtectsAPIs(t *testing.T) {
 		t.Fatalf("tasks without token status = %d, want 401", resp.Code)
 	}
 
-	badBody := bytes.NewBufferString(`{"password":"wrong"}`)
-	req = httptest.NewRequest(http.MethodPost, "/api/panel-auth/login", badBody)
-	req.Header.Set("Content-Type", "application/json")
-	resp = httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusUnauthorized {
-		t.Fatalf("bad login status = %d, want 401", resp.Code)
-	}
-
-	token := loginTestPanel(t, router, "panel-secret")
 	req = httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp = httptest.NewRecorder()
@@ -113,12 +102,19 @@ func TestPanelAuthProtectsAPIs(t *testing.T) {
 		t.Fatalf("tasks with token status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/panel-auth/session", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/user-auth/session", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp = httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("session status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var session model.UserAuthResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if session.User == nil || session.User.UID != testOwnerUID {
+		t.Fatalf("unexpected session user: %#v", session.User)
 	}
 }
 
@@ -129,8 +125,7 @@ func TestAccountImportExportAPIs(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	router, token := newTestRouter(taskStore)
 
 	body := bytes.NewBufferString(`{"accounts":[{"name":"主账号","cookie":"SESSDATA=main; bili_jct=token","note":"常用"},{"name":"备用账号","cookie":"SESSDATA=backup","note":"备用"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/accounts/import", body)
@@ -194,8 +189,7 @@ func TestTaskAPIsRejectConcurrentProxyWithoutGroup(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	router, token := newTestRouter(taskStore)
 	body := bytes.NewBufferString(`{"name":"并发代理任务","accountId":1,"proxyMode":"concurrent","projectId":1001701,"screenId":2001,"skuId":3001,"ticketDisplay":"晚场 - VIP","saleStart":"2026-06-13 20:00:00","buyerInfo":[{"name":"张三","personalId":"110101199001010000"}],"buyer":"张三","tel":"13800000000","deliverInfo":{"id":9,"name":"张三","phone":"13800000000"},"pollIntervalMillis":1000}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", body)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -214,8 +208,7 @@ func TestBWSTaskAPIsRejectConcurrentProxyWithoutGroup(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	router, token := newTestRouter(taskStore)
 	body := bytes.NewBufferString(`{"name":"BWS并发代理任务","accountId":1,"proxyMode":"concurrent","reserveType":"activity","year":"202601","reserveDate":"20260710","ticketNo":"TICKET-10","reserveId":12345,"title":"BWS活动","reserveBeginTime":1783670000,"timeSyncStrategy":"local","pollIntervalMillis":1000}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/bws/tasks", body)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -234,8 +227,10 @@ func TestBWSTaskAPIsAllowImmediateWithoutReserveBeginTime(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	if _, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "BWS账号", Cookie: "SESSDATA=x"}); err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	router, token := newTestRouter(taskStore)
 	body := bytes.NewBufferString(`{"name":"BWS立即任务","accountId":1,"mode":"immediate","reserveType":"activity","year":"202601","reserveDate":"20260710","ticketNo":"TICKET-10","reserveId":12345,"title":"BWS活动","timeSyncStrategy":"local","pollIntervalMillis":1000}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/bws/tasks", body)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -261,11 +256,11 @@ func TestBWSLogsAPIListsAllLogs(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	account, err := taskStore.CreateAccount(context.Background(), model.AccountInput{Name: "BWS账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	account, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "BWS账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	task, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	task, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS日志任务",
 		AccountID:          account.ID,
 		ReserveType:        model.BWSReserveTypeActivity,
@@ -285,8 +280,8 @@ func TestBWSLogsAPIListsAllLogs(t *testing.T) {
 		t.Fatalf("AddBWSTaskLog: %v", err)
 	}
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	router, token := newTestRouter(taskStore)
+
 	req := httptest.NewRequest(http.MethodGet, "/api/bws/logs", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp := httptest.NewRecorder()
@@ -303,14 +298,14 @@ func TestBWSLogsAPIListsAllLogs(t *testing.T) {
 	}
 }
 
-func TestPanelAuthProtectsEventsAndAllowsQueryToken(t *testing.T) {
+func TestUserAuthProtectsEventsAndAllowsQueryToken(t *testing.T) {
 	taskStore, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
+	router, token := newTestRouter(taskStore)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	resp := httptest.NewRecorder()
@@ -319,7 +314,6 @@ func TestPanelAuthProtectsEventsAndAllowsQueryToken(t *testing.T) {
 		t.Fatalf("events without token status = %d, want 401", resp.Code)
 	}
 
-	token := loginTestPanel(t, router, "panel-secret")
 	ctx, cancel := context.WithCancel(context.Background())
 	req = httptest.NewRequest(http.MethodGet, "/api/events?token="+token, nil).WithContext(ctx)
 	resp = httptest.NewRecorder()
@@ -348,12 +342,7 @@ func TestNotificationAPIs(t *testing.T) {
 	defer taskStore.Close()
 
 	sender := &fakeNotificationSender{}
-	router := NewRouter(
-		taskStore,
-		panelauth.NewManager("panel-secret", 24*time.Hour),
-		applog.NewWithWriter([]string{"none"}, nil),
-		WithNotificationSender(sender),
-	)
+	router, token := newTestRouterWithLogger(taskStore, applog.NewWithWriter([]string{"none"}, nil), WithNotificationSender(sender))
 	req := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
@@ -361,7 +350,6 @@ func TestNotificationAPIs(t *testing.T) {
 		t.Fatalf("notifications without token status = %d, want 401", resp.Code)
 	}
 
-	token := loginTestPanel(t, router, "panel-secret")
 	body := bytes.NewBufferString(`{"name":"PushPlus","provider":"pushplus","config":{"token":"push-token"}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/notifications", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -426,8 +414,7 @@ func TestProxyAPIsAndBusyGuard(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	router := newTestRouter(taskStore)
-	token := loginTestPanel(t, router, "panel-secret")
+	router, token := newTestRouter(taskStore)
 
 	body := bytes.NewBufferString(`{"name":"代理组","type":"static","apiProvider":"","apiConfig":{}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy-groups", body)
@@ -559,7 +546,7 @@ func TestProxyAPIsAndBusyGuard(t *testing.T) {
 		t.Fatalf("create api proxy node status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 
-	task, err := taskStore.CreateTask(context.Background(), model.TaskInput{
+	task, err := taskStore.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:               "代理占用任务",
 		AccountID:          1,
 		ProxyGroupID:       group.ID,
@@ -595,7 +582,7 @@ func TestProxyAPIsAndBusyGuard(t *testing.T) {
 	}
 }
 
-func TestPanelAuthLogsLoginLogoutAndTaskLogs(t *testing.T) {
+func TestUserAuthLogsLogoutAndTaskLogs(t *testing.T) {
 	taskStore, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -603,17 +590,9 @@ func TestPanelAuthLogsLoginLogoutAndTaskLogs(t *testing.T) {
 	defer taskStore.Close()
 
 	var out bytes.Buffer
-	router := NewRouter(
-		taskStore,
-		panelauth.NewManager("panel-secret", 24*time.Hour),
-		applog.NewWithWriter([]string{"info", "warn", "error"}, &out),
-	)
-	token := loginTestPanel(t, router, "panel-secret")
-	if !strings.Contains(out.String(), "[INFO] 面板登录成功") {
-		t.Fatalf("login log missing: %q", out.String())
-	}
+	router, token := newTestRouterWithLogger(taskStore, applog.NewWithWriter([]string{"info", "warn", "error"}, &out))
 
-	task, err := taskStore.CreateTask(context.Background(), model.TaskInput{
+	task, err := taskStore.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:               "待删除任务",
 		AccountID:          1,
 		ProjectID:          1001701,
@@ -641,14 +620,14 @@ func TestPanelAuthLogsLoginLogoutAndTaskLogs(t *testing.T) {
 		t.Fatalf("task log sync missing: %q", out.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/panel-auth/logout", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/user-auth/logout", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp = httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("logout status = %d, body = %s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(out.String(), "[INFO] 面板退出登录成功") {
+	if !strings.Contains(out.String(), "[INFO] 用户退出登录成功") {
 		t.Fatalf("logout log missing: %q", out.String())
 	}
 }
@@ -671,15 +650,10 @@ func TestWebUIRoutesDoNotInterceptAPI(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	router := NewRouter(
-		taskStore,
-		panelauth.NewManager("panel-secret", 24*time.Hour),
-		applog.NewWithWriter([]string{"none"}, nil),
-		WithWebFS(fstest.MapFS{
-			"index.html":    {Data: []byte("<html><body>Biligo App</body></html>")},
-			"assets/app.js": {Data: []byte("console.log('biligo')")},
-		}),
-	)
+	router, _ := newTestRouterWithLogger(taskStore, applog.NewWithWriter([]string{"none"}, nil), WithWebFS(fstest.MapFS{
+		"index.html":    {Data: []byte("<html><body>Biligo App</body></html>")},
+		"assets/app.js": {Data: []byte("console.log('biligo')")},
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	resp := httptest.NewRecorder()
@@ -724,27 +698,20 @@ func TestWebUIRoutesDoNotInterceptAPI(t *testing.T) {
 	}
 }
 
-func newTestRouter(taskStore *store.Store) *gin.Engine {
-	return NewRouter(taskStore, panelauth.NewManager("panel-secret", 24*time.Hour), applog.NewWithWriter([]string{"none"}, nil))
+const testOwnerUID = int64(1001)
+
+func newTestRouter(taskStore *store.Store) (*gin.Engine, string) {
+	return newTestRouterWithLogger(taskStore, applog.NewWithWriter([]string{"none"}, nil))
 }
 
-func loginTestPanel(t *testing.T, router *gin.Engine, password string) string {
-	t.Helper()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/panel-auth/login", bytes.NewBufferString(`{"password":"`+password+`"}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("login status = %d, body = %s", resp.Code, resp.Body.String())
+func newTestRouterWithLogger(taskStore *store.Store, logger *applog.Logger, opts ...RouterOption) (*gin.Engine, string) {
+	user := userauth.NewManager(24 * time.Hour)
+	if err := taskStore.UpsertUser(context.Background(), testOwnerUID, "测试用户", "SESSDATA=test"); err != nil {
+		panic(err)
 	}
-
-	var auth model.PanelAuthResponse
-	if err := json.Unmarshal(resp.Body.Bytes(), &auth); err != nil {
-		t.Fatalf("decode login response: %v", err)
+	token, _, err := user.Login(userauth.User{UID: testOwnerUID, Username: "测试用户"})
+	if err != nil {
+		panic(err)
 	}
-	if auth.Token == "" || auth.ExpiresAt == "" {
-		t.Fatalf("unexpected login response: %#v", auth)
-	}
-	return auth.Token
+	return NewRouter(taskStore, user, logger, opts...), token
 }

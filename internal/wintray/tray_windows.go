@@ -13,7 +13,6 @@ import (
 
 	"github.com/fdcs99/biligo/assets"
 	"github.com/fdcs99/biligo/internal/app"
-	"github.com/fdcs99/biligo/internal/config"
 	"github.com/fdcs99/biligo/internal/winconsole"
 	"github.com/fdcs99/biligo/internal/winutil"
 	"github.com/gogpu/systray"
@@ -62,7 +61,6 @@ func (t *Tray) refreshMenu() {
 	menu.Add("启动服务", func() { t.startService(false) })
 	menu.Add("停止服务", func() { t.stopService(false) })
 	menu.Add("重启服务", t.restartService)
-	menu.Add("复制面板密码", t.copyPanelPassword)
 	menu.AddSeparator()
 	if t.console.Visible() {
 		menu.Add("隐藏控制台", t.hideConsole)
@@ -96,9 +94,6 @@ func (t *Tray) startService(auto bool) {
 			message = "服务已启动：" + t.app.PanelURL()
 		}
 		t.tray.ShowNotification("Biligo", message)
-		if password := t.app.GeneratedPanelPassword(); password != "" {
-			t.tray.ShowNotification("Biligo 面板登录密码", password)
-		}
 		t.refreshMenu()
 	}()
 }
@@ -185,24 +180,6 @@ func (t *Tray) openLogDir() {
 	if err := openDir(filepath.Dir(absPath(t.app.LogPath()))); err != nil {
 		t.tray.ShowNotification("Biligo", "打开日志目录失败："+err.Error())
 	}
-}
-
-func (t *Tray) copyPanelPassword() {
-	password := strings.TrimSpace(t.app.PanelPassword())
-	if password == "" {
-		if storedPassword, err := config.ReadPanelPassword(t.app.ConfigPath()); err == nil {
-			password = strings.TrimSpace(storedPassword)
-		}
-	}
-	if password == "" {
-		t.tray.ShowNotification("Biligo", "未找到面板密码，请先启动服务。")
-		return
-	}
-	if err := winutil.SetClipboardText(password); err != nil {
-		t.tray.ShowNotification("Biligo", "复制面板密码失败："+err.Error())
-		return
-	}
-	t.tray.ShowNotification("Biligo", "面板密码已复制。")
 }
 
 func (t *Tray) quit() {

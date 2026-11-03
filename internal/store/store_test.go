@@ -9,6 +9,8 @@ import (
 	"github.com/fdcs99/biligo/internal/model"
 )
 
+const testOwnerUID = int64(1001)
+
 func TestCreateTaskPersistsFullPurchaseConfig(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
@@ -16,7 +18,7 @@ func TestCreateTaskPersistsFullPurchaseConfig(t *testing.T) {
 	}
 	defer store.Close()
 
-	task, err := store.CreateTask(context.Background(), model.TaskInput{
+	task, err := store.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:        "测试任务",
 		AccountID:   1,
 		ProjectID:   1001701,
@@ -214,7 +216,7 @@ func TestImportExportAccount(t *testing.T) {
 	}
 	defer store.Close()
 
-	created, err := store.ImportAccount(context.Background(), model.AccountExportItem{
+	created, err := store.ImportAccount(context.Background(), testOwnerUID, model.AccountExportItem{
 		Name:   "主账号",
 		Cookie: "SESSDATA=main; bili_jct=token",
 		Note:   "常用",
@@ -234,7 +236,7 @@ func TestImportExportAccount(t *testing.T) {
 		t.Fatalf("unexpected exported account: %#v", exported)
 	}
 
-	second, err := store.ImportAccount(context.Background(), model.AccountExportItem{
+	second, err := store.ImportAccount(context.Background(), testOwnerUID, model.AccountExportItem{
 		Name:   "备用账号",
 		Cookie: "SESSDATA=backup",
 		Note:   "备用",
@@ -242,7 +244,7 @@ func TestImportExportAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportAccount second: %v", err)
 	}
-	exportedBatch, err := store.ExportAccounts(context.Background(), []int64{created.ID, second.ID})
+	exportedBatch, err := store.ExportAccounts(context.Background(), testOwnerUID, []int64{created.ID, second.ID})
 	if err != nil {
 		t.Fatalf("ExportAccounts: %v", err)
 	}
@@ -258,14 +260,14 @@ func TestBWSTaskCRUDAndLogs(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	account, err := taskStore.CreateAccount(context.Background(), model.AccountInput{
+	account, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{
 		Name:   "BWS账号",
 		Cookie: "SESSDATA=x; bili_jct=csrf",
 	})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	proxyGroup, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	proxyGroup, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name: "BWS代理",
 		Type: model.ProxyGroupTypeStatic,
 	})
@@ -273,7 +275,7 @@ func TestBWSTaskCRUDAndLogs(t *testing.T) {
 		t.Fatalf("CreateProxyGroup: %v", err)
 	}
 
-	task, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	task, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS测试",
 		AccountID:          account.ID,
 		ReserveType:        model.BWSReserveTypeGoods,
@@ -339,7 +341,7 @@ func TestBWSTaskCRUDAndLogs(t *testing.T) {
 		t.Fatalf("legacy columns changed unexpectedly: %d/%d", legacyOffset, legacyConcurrency)
 	}
 
-	defaultIntervalTask, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	defaultIntervalTask, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:             "BWS默认间隔",
 		AccountID:        account.ID,
 		ReserveType:      model.BWSReserveTypeActivity,
@@ -388,7 +390,7 @@ func TestBWSTaskCRUDAndLogs(t *testing.T) {
 		t.Fatalf("paused/logs = %#v/%#v", paused, logs)
 	}
 
-	listedLogs, err := taskStore.ListBWSTaskLogs(context.Background(), task.ID)
+	listedLogs, err := taskStore.ListBWSTaskLogs(context.Background(), testOwnerUID, task.ID)
 	if err != nil {
 		t.Fatalf("ListBWSTaskLogs: %v", err)
 	}
@@ -464,7 +466,7 @@ func TestNotificationStoreCRUD(t *testing.T) {
 	}
 	defer store.Close()
 
-	notification, err := store.CreateNotification(context.Background(), model.NotificationInput{
+	notification, err := store.CreateNotification(context.Background(), testOwnerUID, model.NotificationInput{
 		Name:     "PushPlus",
 		Provider: model.NotificationProviderPushPlus,
 		Config:   map[string]string{"token": "push-token"},
@@ -498,7 +500,7 @@ func TestNotificationStoreCRUD(t *testing.T) {
 	if !notification.Enabled {
 		t.Fatalf("Enabled = false, want true")
 	}
-	enabled, err := store.ListEnabledNotifications(context.Background())
+	enabled, err := store.ListEnabledNotifications(context.Background(), testOwnerUID)
 	if err != nil {
 		t.Fatalf("ListEnabledNotifications: %v", err)
 	}
@@ -517,7 +519,7 @@ func TestNotificationStoreCRUD(t *testing.T) {
 	if err := store.DeleteNotification(context.Background(), notification.ID); err != nil {
 		t.Fatalf("DeleteNotification: %v", err)
 	}
-	notifications, err := store.ListNotifications(context.Background())
+	notifications, err := store.ListNotifications(context.Background(), testOwnerUID)
 	if err != nil {
 		t.Fatalf("ListNotifications: %v", err)
 	}
@@ -533,7 +535,7 @@ func TestProxyStoreCRUDAndTaskReference(t *testing.T) {
 	}
 	defer store.Close()
 
-	group, err := store.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := store.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name:        "快代理",
 		Type:        model.ProxyGroupTypeAPI,
 		APIProvider: model.ProxyProviderKuaidailiDPS,
@@ -681,18 +683,18 @@ func TestProxyStoreCRUDAndTaskReference(t *testing.T) {
 		t.Fatal("ProxyGroupInUse = false, want true")
 	}
 
-	bwsGroup, err := store.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	bwsGroup, err := store.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name: "BWS运行代理",
 		Type: model.ProxyGroupTypeStatic,
 	})
 	if err != nil {
 		t.Fatalf("CreateProxyGroup bws: %v", err)
 	}
-	account, err := store.CreateAccount(context.Background(), model.AccountInput{Name: "BWS账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	account, err := store.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "BWS账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		t.Fatalf("CreateAccount bws: %v", err)
 	}
-	bwsTask, err := store.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	bwsTask, err := store.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS代理任务",
 		AccountID:          account.ID,
 		ProxyGroupID:       bwsGroup.ID,
@@ -769,7 +771,7 @@ func TestPauseInterruptedTasks(t *testing.T) {
 		if task.LastMessage != interruptedTaskMessage {
 			t.Fatalf("task %d LastMessage = %q", task.ID, task.LastMessage)
 		}
-		logs, err := store.ListTaskLogs(context.Background(), task.ID)
+		logs, err := store.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
 		if err != nil {
 			t.Fatalf("ListTaskLogs %d: %v", task.ID, err)
 		}
@@ -820,7 +822,7 @@ func TestSetTaskRuntimeFillsLastCheckedAt(t *testing.T) {
 func createTestTask(t *testing.T, store *Store, name string) model.Task {
 	t.Helper()
 
-	task, err := store.CreateTask(context.Background(), model.TaskInput{
+	task, err := store.CreateTask(context.Background(), testOwnerUID, model.TaskInput{
 		Name:               name,
 		AccountID:          1,
 		ProjectID:          1001701,

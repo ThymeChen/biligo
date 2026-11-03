@@ -20,6 +20,8 @@ import (
 	"github.com/fdcs99/biligo/internal/timesync"
 )
 
+const testOwnerUID = int64(1001)
+
 type fakeTimeSync struct{}
 
 func (fakeTimeSync) Sync(context.Context) (timesync.Result, error) {
@@ -49,12 +51,12 @@ func TestDispatchWaitsUntilReserveBeginTimeAndSucceeds(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	account, err := taskStore.CreateAccount(context.Background(), model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	account, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
 	reserveBeginTime := time.Now().Add(2 * time.Second).Unix()
-	task, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	task, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS",
 		AccountID:          account.ID,
 		ReserveType:        model.BWSReserveTypeActivity,
@@ -100,7 +102,7 @@ func TestDispatchWaitsUntilReserveBeginTimeAndSucceeds(t *testing.T) {
 			if reserveCalls.Load() != 1 {
 				t.Fatalf("reserve endpoint calls = %d, want 1", reserveCalls.Load())
 			}
-			logs, err := taskStore.ListBWSTaskLogs(context.Background(), task.ID)
+			logs, err := taskStore.ListBWSTaskLogs(context.Background(), testOwnerUID, task.ID)
 			if err != nil {
 				t.Fatalf("ListBWSTaskLogs: %v", err)
 			}
@@ -129,11 +131,11 @@ func TestDispatchImmediateSkipsReserveBeginTimeWait(t *testing.T) {
 	}
 	defer taskStore.Close()
 
-	account, err := taskStore.CreateAccount(context.Background(), model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	account, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	task, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	task, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS立即",
 		AccountID:          account.ID,
 		ReserveType:        model.BWSReserveTypeActivity,
@@ -268,11 +270,11 @@ func TestAPIProxyGroupPullsBeforeBWSReserve(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer taskStore.Close()
-	account, err := taskStore.CreateAccount(context.Background(), model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	account, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name:        "API代理",
 		Type:        model.ProxyGroupTypeAPI,
 		APIProvider: model.ProxyProviderKuaidailiDPS,
@@ -286,7 +288,7 @@ func TestAPIProxyGroupPullsBeforeBWSReserve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProxyGroup: %v", err)
 	}
-	task, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	task, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS",
 		AccountID:          account.ID,
 		ProxyGroupID:       group.ID,
@@ -336,12 +338,12 @@ func createProxyBWSTask(t *testing.T, proxyMode string) (*store.Store, model.BWS
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	account, err := taskStore.CreateAccount(context.Background(), model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	account, err := taskStore.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		taskStore.Close()
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	group, err := taskStore.CreateProxyGroup(context.Background(), model.ProxyGroupInput{
+	group, err := taskStore.CreateProxyGroup(context.Background(), testOwnerUID, model.ProxyGroupInput{
 		Name: "BWS代理",
 		Type: model.ProxyGroupTypeStatic,
 	})
@@ -349,7 +351,7 @@ func createProxyBWSTask(t *testing.T, proxyMode string) (*store.Store, model.BWS
 		taskStore.Close()
 		t.Fatalf("CreateProxyGroup: %v", err)
 	}
-	task, err := taskStore.CreateBWSTask(context.Background(), model.BWSTaskInput{
+	task, err := taskStore.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
 		Name:               "BWS",
 		AccountID:          account.ID,
 		ProxyGroupID:       group.ID,
