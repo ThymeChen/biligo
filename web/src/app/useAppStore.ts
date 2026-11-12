@@ -270,7 +270,7 @@ function createStore() {
           taskId: log.taskId,
           taskName: tasks.value.find((task) => task.id === log.taskId)?.name ?? '',
           level: log.level,
-          message: log.message,
+          message: log.message.replace(/^\[.*\/.*]\s/, ''),
           createdAt: log.createdAt,
         }))
     const bwsRows = selectedLogKind.value === 'ticket'
@@ -282,7 +282,7 @@ function createStore() {
           taskId: log.taskId,
           taskName: bwsTasks.value.find((task) => task.id === log.taskId)?.name ?? '',
           level: log.level,
-          message: log.message,
+          message: log.message.replace(/^\[.*\/.*]\s/, ''),
           createdAt: log.createdAt,
         }))
     return [...ticketRows, ...bwsRows].sort((a, b) => compareDateText(b.createdAt, a.createdAt)).slice(0, 200)
