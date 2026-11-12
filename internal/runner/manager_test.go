@@ -972,7 +972,7 @@ func TestRunnerSendsNotificationOnWaitingPayment(t *testing.T) {
 	}
 	found := false
 	for _, log := range logs {
-		if log.Message == "通知推送成功：PushPlus。" {
+		if strings.HasSuffix(log.Message, "通知推送成功：PushPlus。") {
 			found = true
 			break
 		}
@@ -2136,7 +2136,7 @@ func TestRestockModeLogsRepeatedStatusChecks(t *testing.T) {
 	}
 	statusLogCount := 0
 	for _, log := range logs {
-		if log.Message == expectedMessage {
+		if strings.HasSuffix(log.Message, expectedMessage) {
 			statusLogCount++
 		}
 	}

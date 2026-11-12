@@ -66,7 +66,7 @@ func TestDeleteTaskWritesLog(t *testing.T) {
 	if len(logs) == 0 {
 		t.Fatal("delete log was not created")
 	}
-	if logs[0].TaskID != task.ID || logs[0].Level != "warn" || logs[0].Message != "任务已删除：待删除任务。" {
+	if logs[0].TaskID != task.ID || logs[0].Level != "warn" || !strings.HasSuffix(logs[0].Message, "任务已删除：待删除任务。") {
 		t.Fatalf("unexpected delete log: %#v", logs[0])
 	}
 }
@@ -293,7 +293,7 @@ func TestBWSLogsAPIListsAllLogs(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &logs); err != nil {
 		t.Fatalf("decode logs: %v", err)
 	}
-	if len(logs) == 0 || logs[0].TaskID != task.ID || logs[0].Message != "BWS 日志" {
+	if len(logs) == 0 || logs[0].TaskID != task.ID || logs[0].Message != "[BWS账号/BWS日志任务] BWS 日志" {
 		t.Fatalf("unexpected BWS logs: %#v", logs)
 	}
 }
@@ -616,7 +616,7 @@ func TestUserAuthLogsLogoutAndTaskLogs(t *testing.T) {
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d, body = %s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(out.String(), "[WARN] 任务日志实时同步：任务 1：任务已删除："+task.Name+"。") {
+	if !strings.Contains(out.String(), "[WARN] 任务日志实时同步：任务 1：["+task.Name+"] 任务已删除："+task.Name+"。") {
 		t.Fatalf("task log sync missing: %q", out.String())
 	}
 

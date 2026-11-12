@@ -1479,7 +1479,52 @@ func (s *Store) SetTaskMatchedTicket(ctx context.Context, id int64, ticket model
 	return task, log, nil
 }
 
+func (s *Store) taskLogPrefix(ctx context.Context, taskID int64) string {
+	var taskName, accountName string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT t.name, COALESCE(a.name, '')
+		FROM tasks t
+		LEFT JOIN accounts a ON a.id = t.account_id
+		WHERE t.id = ?
+	`, taskID).Scan(&taskName, &accountName)
+	if err != nil {
+		return ""
+	}
+	return logContextPrefix(accountName, taskName)
+}
+
+func (s *Store) bwsTaskLogPrefix(ctx context.Context, taskID int64) string {
+	var taskName, accountName string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT t.name, COALESCE(a.name, '')
+		FROM bws_tasks t
+		LEFT JOIN accounts a ON a.id = t.account_id
+		WHERE t.id = ?
+	`, taskID).Scan(&taskName, &accountName)
+	if err != nil {
+		return ""
+	}
+	return logContextPrefix(accountName, taskName)
+}
+
+// logContextPrefix 生成日志消息前的账号/任务名称前缀，名称缺失时仅保留可用部分。
+func logContextPrefix(accountName string, taskName string) string {
+	accountName = strings.TrimSpace(accountName)
+	taskName = strings.TrimSpace(taskName)
+	switch {
+	case accountName != "" && taskName != "":
+		return fmt.Sprintf("[%s/%s] ", accountName, taskName)
+	case accountName != "":
+		return fmt.Sprintf("[%s] ", accountName)
+	case taskName != "":
+		return fmt.Sprintf("[%s] ", taskName)
+	default:
+		return ""
+	}
+}
+
 func (s *Store) AddTaskLog(ctx context.Context, taskID int64, level string, message string) (model.TaskLog, error) {
+	message = s.taskLogPrefix(ctx, taskID) + message
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO task_logs (task_id, owner_uid, level, message, created_at)
 		VALUES (?, COALESCE((SELECT owner_uid FROM tasks WHERE id = ?), 0), ?, ?, ?)
@@ -1755,10 +1800,11 @@ func (s *Store) SetBWSTaskTimeSync(ctx context.Context, id int64, strategy strin
 }
 
 func (s *Store) AddBWSTaskLog(ctx context.Context, taskID int64, level string, message string) (model.BWSTaskLog, error) {
+	message = s.bwsTaskLogPrefix(ctx, taskID) + strings.TrimSpace(message)
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO bws_task_logs (task_id, owner_uid, level, message, created_at)
 		VALUES (?, COALESCE((SELECT owner_uid FROM bws_tasks WHERE id = ?), 0), ?, ?, ?)
-	`, taskID, taskID, strings.TrimSpace(level), strings.TrimSpace(message), nowText())
+	`, taskID, taskID, strings.TrimSpace(level), message, nowText())
 	if err != nil {
 		return model.BWSTaskLog{}, err
 	}

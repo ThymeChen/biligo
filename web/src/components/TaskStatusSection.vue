@@ -141,7 +141,10 @@ const {
           <template v-if="mobileLogMode !== 'empty'">
             <article v-for="log in managedLogs" :key="log.key" class="mobile-log-line">
               <div class="mobile-log-meta">
-                <el-tag :type="logLevelTagType(log.level)" size="small">{{ log.level }}</el-tag>
+                <span class="mobile-log-meta-main">
+                  <el-tag :type="logLevelTagType(log.level)" size="small">{{ log.level }}</el-tag>
+                  <small v-if="log.taskName" class="log-task-name">{{ log.taskName }}</small>
+                </span>
                 <time>{{ log.createdAt }}</time>
               </div>
               <p>{{ log.message }}</p>
@@ -163,7 +166,10 @@ const {
       </div>
       <article v-for="log in managedLogs" :key="log.key" class="log-line">
         <el-tag :type="logLevelTagType(log.level)" size="small">{{ log.level }}</el-tag>
-        <p>{{ log.message }}</p>
+        <div class="log-message">
+          <small v-if="log.taskName" class="log-task-name">{{ log.taskName }}</small>
+          <p>{{ log.message }}</p>
+        </div>
         <time>{{ log.createdAt }}</time>
       </article>
       <el-empty v-if="managedLogs.length === 0" description="暂无日志" />

@@ -772,6 +772,13 @@ p {
   text-align: right;
 }
 
+.mobile-log-meta-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .log-panel {
   max-height: 420px;
   overflow: auto;
@@ -811,6 +818,18 @@ p {
 .log-line time {
   color: #77736c;
   font-size: 13px;
+}
+
+.log-message {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.log-task-name {
+  color: #77736c;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .payment-cell {

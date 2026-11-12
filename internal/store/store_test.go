@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -775,7 +776,7 @@ func TestPauseInterruptedTasks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListTaskLogs %d: %v", task.ID, err)
 		}
-		if len(logs) == 0 || logs[0].Level != "warn" || logs[0].Message != interruptedTaskMessage {
+		if len(logs) == 0 || logs[0].Level != "warn" || !strings.HasSuffix(logs[0].Message, interruptedTaskMessage) {
 			t.Fatalf("unexpected latest log for task %d: %#v", task.ID, logs)
 		}
 	}
@@ -816,6 +817,73 @@ func TestSetTaskRuntimeFillsLastCheckedAt(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339Nano, updated.LastCheckedAt); err != nil {
 		t.Fatalf("LastCheckedAt should be RFC3339Nano: %v", err)
+	}
+}
+
+func TestTaskLogMessageIncludesAccountAndTaskNames(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	account, err := store.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "主账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	task := createTestTask(t, store, "抢票任务")
+	log, err := store.AddTaskLog(context.Background(), task.ID, "info", "订单已创建")
+	if err != nil {
+		t.Fatalf("AddTaskLog: %v", err)
+	}
+	if log.Message != "[主账号/抢票任务] 订单已创建" {
+		t.Fatalf("task log message = %q, want account/task name prefix", log.Message)
+	}
+
+	bwsTask, err := store.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
+		Name:               "BWS 任务",
+		AccountID:          account.ID,
+		ReserveType:        model.BWSReserveTypeActivity,
+		Year:               "202601",
+		ReserveDate:        "20260710",
+		TicketNo:           "TICKET-10",
+		ReserveID:          12345,
+		Title:              "BWS活动",
+		ReserveBeginTime:   1783670000,
+		PollIntervalMillis: 1000,
+	})
+	if err != nil {
+		t.Fatalf("CreateBWSTask: %v", err)
+	}
+	bwsLog, err := store.AddBWSTaskLog(context.Background(), bwsTask.ID, "info", "预约成功")
+	if err != nil {
+		t.Fatalf("AddBWSTaskLog: %v", err)
+	}
+	if bwsLog.Message != "[主账号/BWS 任务] 预约成功" {
+		t.Fatalf("bws log message = %q, want account/task name prefix", bwsLog.Message)
+	}
+
+	noAccountTask, err := store.CreateTask(context.Background(), testOwnerUID, model.TaskInput{Name: "无账号任务", PollIntervalMillis: 1000})
+	if err != nil {
+		t.Fatalf("CreateTask without account: %v", err)
+	}
+	noAccountLog, err := store.AddTaskLog(context.Background(), noAccountTask.ID, "info", "等待下发")
+	if err != nil {
+		t.Fatalf("AddTaskLog without account: %v", err)
+	}
+	if noAccountLog.Message != "[无账号任务] 等待下发" {
+		t.Fatalf("no-account log message = %q, want task name prefix", noAccountLog.Message)
+	}
+
+	if err := store.DeleteTask(context.Background(), task.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	orphanLog, err := store.AddTaskLog(context.Background(), task.ID, "warn", "任务已停止")
+	if err != nil {
+		t.Fatalf("AddTaskLog after delete: %v", err)
+	}
+	if orphanLog.Message != "任务已停止" {
+		t.Fatalf("orphan log message = %q, want no prefix", orphanLog.Message)
 	}
 }
 
