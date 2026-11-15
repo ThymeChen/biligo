@@ -8,7 +8,7 @@ import type {
   TicketBuyer,
 } from '../api'
 import { defaultSuperModeBase, superModeBaseOptions, chinaTimeZoneOffset, chinaTimeZoneOffsetMillis, explicitTimeZonePattern } from './constants'
-import type { ManagedTaskRow } from './types'
+import type { ManagedLogRow, ManagedTaskRow } from './types'
 
 export function cleanConfig(config: Record<string, string>) {
   const output: Record<string, string> = {}
@@ -453,6 +453,10 @@ export function taskStatusTagType(status: string) {
     return 'warning'
   }
   return 'info'
+}
+
+export function managedLogContext(row: ManagedLogRow) {
+  return [row.userName, row.taskName].filter((part) => part.trim() !== '').join(' / ')
 }
 
 export function logLevelTagType(level: string) {

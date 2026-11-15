@@ -358,6 +358,9 @@ export interface TaskLog {
   level: string
   message: string
   createdAt: string
+  taskName: string
+  accountName: string
+  userName: string
 }
 
 export interface EventSnapshot {
@@ -481,6 +484,9 @@ export interface BWSTaskLog {
   level: string
   message: string
   createdAt: string
+  taskName: string
+  accountName: string
+  userName: string
 }
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? ''

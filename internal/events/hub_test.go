@@ -50,3 +50,30 @@ func TestHubLogsCreatedTaskLogs(t *testing.T) {
 		t.Fatalf("unexpected app log: %q", got)
 	}
 }
+
+func TestHubLogsPrefixAccountAndTaskNames(t *testing.T) {
+	var out bytes.Buffer
+	hub := NewHub(applog.NewWithWriter([]string{"info"}, &out))
+
+	hub.Publish("log.created", model.TaskLog{
+		TaskID:      9,
+		Level:       "info",
+		Message:     "订单已创建。",
+		TaskName:    "抢票任务",
+		AccountName: "主账号",
+	})
+	hub.Publish("bws.log.created", model.BWSTaskLog{
+		TaskID:   10,
+		Level:    "info",
+		Message:  "预约成功。",
+		TaskName: "BWS 任务",
+	})
+
+	got := out.String()
+	if !strings.Contains(got, "[INFO] 任务日志实时同步：任务 9：[主账号/抢票任务] 订单已创建。") {
+		t.Fatalf("unexpected ticket app log: %q", got)
+	}
+	if !strings.Contains(got, "[INFO] BWS 任务日志实时同步：任务 10：[BWS 任务] 预约成功。") {
+		t.Fatalf("unexpected bws app log: %q", got)
+	}
+}

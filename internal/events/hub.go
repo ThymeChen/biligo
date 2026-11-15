@@ -188,16 +188,16 @@ func (h *Hub) logEvent(name string, payload any) {
 	}
 	switch value := payload.(type) {
 	case model.TaskLog:
-		h.logger.Log(value.Level, fmt.Sprintf("任务日志实时同步：任务 %d：%s", value.TaskID, value.Message))
+		h.logger.Log(value.Level, fmt.Sprintf("任务日志实时同步：任务 %d：%s%s", value.TaskID, value.ContextPrefix(), value.Message))
 	case *model.TaskLog:
 		if value != nil {
-			h.logger.Log(value.Level, fmt.Sprintf("任务日志实时同步：任务 %d：%s", value.TaskID, value.Message))
+			h.logger.Log(value.Level, fmt.Sprintf("任务日志实时同步：任务 %d：%s%s", value.TaskID, value.ContextPrefix(), value.Message))
 		}
 	case model.BWSTaskLog:
-		h.logger.Log(value.Level, fmt.Sprintf("BWS 任务日志实时同步：任务 %d：%s", value.TaskID, value.Message))
+		h.logger.Log(value.Level, fmt.Sprintf("BWS 任务日志实时同步：任务 %d：%s%s", value.TaskID, value.ContextPrefix(), value.Message))
 	case *model.BWSTaskLog:
 		if value != nil {
-			h.logger.Log(value.Level, fmt.Sprintf("BWS 任务日志实时同步：任务 %d：%s", value.TaskID, value.Message))
+			h.logger.Log(value.Level, fmt.Sprintf("BWS 任务日志实时同步：任务 %d：%s%s", value.TaskID, value.ContextPrefix(), value.Message))
 		}
 	}
 }

@@ -4,6 +4,7 @@ import {
   lastCheckedSummary,
   lastCheckedText,
   logLevelTagType,
+  managedLogContext,
   managedTaskAccountName,
   managedTaskDetail,
   managedTaskLastCheckedAt,
@@ -143,7 +144,7 @@ const {
               <div class="mobile-log-meta">
                 <span class="mobile-log-meta-main">
                   <el-tag :type="logLevelTagType(log.level)" size="small">{{ log.level }}</el-tag>
-                  <small v-if="log.taskName" class="log-task-name">{{ log.taskName }}</small>
+                  <small v-if="log.taskName || log.userName" class="log-task-name">{{ managedLogContext(log) }}</small>
                 </span>
                 <time>{{ log.createdAt }}</time>
               </div>
@@ -167,7 +168,7 @@ const {
       <article v-for="log in managedLogs" :key="log.key" class="log-line">
         <el-tag :type="logLevelTagType(log.level)" size="small">{{ log.level }}</el-tag>
         <div class="log-message">
-          <small v-if="log.taskName" class="log-task-name">{{ log.taskName }}</small>
+          <small v-if="log.taskName || log.userName" class="log-task-name">{{ managedLogContext(log) }}</small>
           <p>{{ log.message }}</p>
         </div>
         <time>{{ log.createdAt }}</time>

@@ -60,7 +60,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			username TEXT NOT NULL DEFAULT '',
 			cookie TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			deleted_at TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,7 +178,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT 'draft',
 			last_message TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			deleted_at TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE TABLE IF NOT EXISTS task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,7 +214,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_message TEXT NOT NULL DEFAULT '',
 			last_checked_at TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			deleted_at TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE TABLE IF NOT EXISTS bws_task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -278,6 +281,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "bws_task_logs", "owner_uid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "users", "deleted_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "tasks", "deleted_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "bws_tasks", "deleted_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.rebuildTicketProjectHistory(ctx); err != nil {
@@ -346,12 +358,13 @@ func (s *Store) rebuildTicketProjectHistory(ctx context.Context) error {
 func (s *Store) UpsertUser(ctx context.Context, uid int64, username string, cookie string) error {
 	now := nowText()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO users (uid, username, cookie, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO users (uid, username, cookie, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, '')
 		ON CONFLICT(uid) DO UPDATE SET
 			username = excluded.username,
 			cookie = excluded.cookie,
-			updated_at = excluded.updated_at
+			updated_at = excluded.updated_at,
+			deleted_at = ''
 	`, uid, strings.TrimSpace(username), strings.TrimSpace(cookie), now, now)
 	return err
 }
@@ -362,12 +375,18 @@ func (s *Store) GetUser(ctx context.Context, uid int64) (int64, string, error) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT uid, username
 		FROM users
-		WHERE uid = ?
+		WHERE uid = ? AND deleted_at = ''
 	`, uid).Scan(&userUID, &username)
 	if err != nil {
 		return 0, "", err
 	}
 	return userUID, username, nil
+}
+
+func (s *Store) DeleteUser(ctx context.Context, uid int64) error {
+	now := nowText()
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET deleted_at = ?, updated_at = ? WHERE uid = ? AND deleted_at = ''`, now, now, uid)
+	return err
 }
 
 func (s *Store) SessionSummary(ctx context.Context, ownerUID int64) (model.SessionSummary, error) {
@@ -826,8 +845,8 @@ func (s *Store) ListProxyGroups(ctx context.Context, ownerUID int64) ([]model.Pr
 				pg.created_at, pg.updated_at
 			FROM proxy_groups pg
 			LEFT JOIN proxy_nodes pn ON pn.group_id = pg.id
-			LEFT JOIN tasks t ON t.proxy_group_id = pg.id
-			LEFT JOIN bws_tasks bt ON bt.proxy_group_id = pg.id
+			LEFT JOIN tasks t ON t.proxy_group_id = pg.id AND t.deleted_at = ''
+			LEFT JOIN bws_tasks bt ON bt.proxy_group_id = pg.id AND bt.deleted_at = ''
 			WHERE pg.owner_uid = ?
 			GROUP BY pg.id
 			ORDER BY pg.updated_at DESC, pg.id DESC
@@ -861,8 +880,8 @@ func (s *Store) GetProxyGroup(ctx context.Context, id int64) (model.ProxyGroup, 
 				pg.created_at, pg.updated_at
 			FROM proxy_groups pg
 			LEFT JOIN proxy_nodes pn ON pn.group_id = pg.id
-			LEFT JOIN tasks t ON t.proxy_group_id = pg.id
-			LEFT JOIN bws_tasks bt ON bt.proxy_group_id = pg.id
+			LEFT JOIN tasks t ON t.proxy_group_id = pg.id AND t.deleted_at = ''
+			LEFT JOIN bws_tasks bt ON bt.proxy_group_id = pg.id AND bt.deleted_at = ''
 			WHERE pg.id = ?
 			GROUP BY pg.id
 	`, id)
@@ -933,9 +952,9 @@ func (s *Store) ProxyGroupInUse(ctx context.Context, id int64) (bool, error) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM (
-			SELECT id FROM tasks WHERE proxy_group_id = ? AND status IN ('waiting_start', 'running')
+			SELECT id FROM tasks WHERE proxy_group_id = ? AND status IN ('waiting_start', 'running') AND deleted_at = ''
 			UNION ALL
-			SELECT id FROM bws_tasks WHERE proxy_group_id = ? AND status IN ('waiting_start', 'running')
+			SELECT id FROM bws_tasks WHERE proxy_group_id = ? AND status IN ('waiting_start', 'running') AND deleted_at = ''
 		)
 	`, id, id).Scan(&count)
 	return count > 0, err
@@ -1115,7 +1134,7 @@ func (s *Store) ListTasks(ctx context.Context, ownerUID int64) ([]model.Task, er
 		FROM tasks t
 		LEFT JOIN accounts a ON a.id = t.account_id
 		LEFT JOIN proxy_groups pg ON pg.id = t.proxy_group_id
-		WHERE t.owner_uid = ?
+		WHERE t.owner_uid = ? AND t.deleted_at = ''
 		ORDER BY t.updated_at DESC, t.id DESC
 	`, ownerUID)
 	if err != nil {
@@ -1195,7 +1214,7 @@ func (s *Store) GetTask(ctx context.Context, id int64) (model.Task, error) {
 		FROM tasks t
 		LEFT JOIN accounts a ON a.id = t.account_id
 		LEFT JOIN proxy_groups pg ON pg.id = t.proxy_group_id
-		WHERE t.id = ?
+		WHERE t.id = ? AND t.deleted_at = ''
 	`, id)
 	err := scanTask(row, &task)
 	return task, err
@@ -1247,7 +1266,8 @@ func (s *Store) UpdateTask(ctx context.Context, id int64, input model.TaskInput)
 }
 
 func (s *Store) DeleteTask(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id)
+	now := nowText()
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`, now, now, id)
 	return err
 }
 
@@ -1264,7 +1284,7 @@ func (s *Store) PauseActiveTasks(ctx context.Context, message string) ([]model.T
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id
 		FROM tasks
-		WHERE status IN ('waiting_start', 'running')
+		WHERE status IN ('waiting_start', 'running') AND deleted_at = ''
 		ORDER BY id ASC
 	`)
 	if err != nil {
@@ -1479,52 +1499,7 @@ func (s *Store) SetTaskMatchedTicket(ctx context.Context, id int64, ticket model
 	return task, log, nil
 }
 
-func (s *Store) taskLogPrefix(ctx context.Context, taskID int64) string {
-	var taskName, accountName string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT t.name, COALESCE(a.name, '')
-		FROM tasks t
-		LEFT JOIN accounts a ON a.id = t.account_id
-		WHERE t.id = ?
-	`, taskID).Scan(&taskName, &accountName)
-	if err != nil {
-		return ""
-	}
-	return logContextPrefix(accountName, taskName)
-}
-
-func (s *Store) bwsTaskLogPrefix(ctx context.Context, taskID int64) string {
-	var taskName, accountName string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT t.name, COALESCE(a.name, '')
-		FROM bws_tasks t
-		LEFT JOIN accounts a ON a.id = t.account_id
-		WHERE t.id = ?
-	`, taskID).Scan(&taskName, &accountName)
-	if err != nil {
-		return ""
-	}
-	return logContextPrefix(accountName, taskName)
-}
-
-// logContextPrefix 生成日志消息前的账号/任务名称前缀，名称缺失时仅保留可用部分。
-func logContextPrefix(accountName string, taskName string) string {
-	accountName = strings.TrimSpace(accountName)
-	taskName = strings.TrimSpace(taskName)
-	switch {
-	case accountName != "" && taskName != "":
-		return fmt.Sprintf("[%s/%s] ", accountName, taskName)
-	case accountName != "":
-		return fmt.Sprintf("[%s] ", accountName)
-	case taskName != "":
-		return fmt.Sprintf("[%s] ", taskName)
-	default:
-		return ""
-	}
-}
-
 func (s *Store) AddTaskLog(ctx context.Context, taskID int64, level string, message string) (model.TaskLog, error) {
-	message = s.taskLogPrefix(ctx, taskID) + message
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO task_logs (task_id, owner_uid, level, message, created_at)
 		VALUES (?, COALESCE((SELECT owner_uid FROM tasks WHERE id = ?), 0), ?, ?, ?)
@@ -1542,17 +1517,25 @@ func (s *Store) AddTaskLog(ctx context.Context, taskID int64, level string, mess
 func (s *Store) GetTaskLog(ctx context.Context, id int64) (model.TaskLog, error) {
 	var log model.TaskLog
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, level, message, created_at
-		FROM task_logs
-		WHERE id = ?
-	`, id).Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt)
+		SELECT l.id, l.task_id, l.level, l.message, l.created_at,
+			COALESCE(t.name, ''), COALESCE(a.name, ''), COALESCE(u.username, '')
+		FROM task_logs l
+		LEFT JOIN tasks t ON t.id = l.task_id
+		LEFT JOIN accounts a ON a.id = t.account_id
+		LEFT JOIN users u ON u.uid = l.owner_uid
+		WHERE l.id = ?
+	`, id).Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt, &log.TaskName, &log.AccountName, &log.UserName)
 	return log, err
 }
 
 func (s *Store) ListTaskLogs(ctx context.Context, ownerUID int64, taskID int64) ([]model.TaskLog, error) {
 	query := `
-		SELECT l.id, l.task_id, l.level, l.message, l.created_at
+		SELECT l.id, l.task_id, l.level, l.message, l.created_at,
+			COALESCE(t.name, ''), COALESCE(a.name, ''), COALESCE(u.username, '')
 		FROM task_logs l
+		LEFT JOIN tasks t ON t.id = l.task_id
+		LEFT JOIN accounts a ON a.id = t.account_id
+		LEFT JOIN users u ON u.uid = l.owner_uid
 		WHERE l.owner_uid = ?
 	`
 	args := []any{ownerUID}
@@ -1571,7 +1554,7 @@ func (s *Store) ListTaskLogs(ctx context.Context, ownerUID int64, taskID int64) 
 	logs := make([]model.TaskLog, 0)
 	for rows.Next() {
 		var log model.TaskLog
-		if err := rows.Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt); err != nil {
+		if err := rows.Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt, &log.TaskName, &log.AccountName, &log.UserName); err != nil {
 			return nil, err
 		}
 		logs = append(logs, log)
@@ -1591,7 +1574,7 @@ func (s *Store) ListBWSTasks(ctx context.Context, ownerUID int64) ([]model.BWSTa
 			FROM bws_tasks t
 			LEFT JOIN accounts a ON a.id = t.account_id
 			LEFT JOIN proxy_groups pg ON pg.id = t.proxy_group_id
-			WHERE t.owner_uid = ?
+			WHERE t.owner_uid = ? AND t.deleted_at = ''
 			ORDER BY t.updated_at DESC, t.id DESC
 	`, ownerUID)
 	if err != nil {
@@ -1647,7 +1630,7 @@ func (s *Store) GetBWSTask(ctx context.Context, id int64) (model.BWSTask, error)
 			FROM bws_tasks t
 			LEFT JOIN accounts a ON a.id = t.account_id
 			LEFT JOIN proxy_groups pg ON pg.id = t.proxy_group_id
-			WHERE t.id = ?
+			WHERE t.id = ? AND t.deleted_at = ''
 	`, id)
 	err := scanBWSTask(row, &task)
 	return task, err
@@ -1683,7 +1666,8 @@ func (s *Store) UpdateBWSTask(ctx context.Context, id int64, input model.BWSTask
 }
 
 func (s *Store) DeleteBWSTask(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM bws_tasks WHERE id = ?`, id)
+	now := nowText()
+	_, err := s.db.ExecContext(ctx, `UPDATE bws_tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`, now, now, id)
 	return err
 }
 
@@ -1700,7 +1684,7 @@ func (s *Store) PauseActiveBWSTasks(ctx context.Context, message string) ([]mode
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id
 		FROM bws_tasks
-		WHERE status IN ('waiting_start', 'running')
+		WHERE status IN ('waiting_start', 'running') AND deleted_at = ''
 		ORDER BY id ASC
 	`)
 	if err != nil {
@@ -1800,7 +1784,7 @@ func (s *Store) SetBWSTaskTimeSync(ctx context.Context, id int64, strategy strin
 }
 
 func (s *Store) AddBWSTaskLog(ctx context.Context, taskID int64, level string, message string) (model.BWSTaskLog, error) {
-	message = s.bwsTaskLogPrefix(ctx, taskID) + strings.TrimSpace(message)
+	message = strings.TrimSpace(message)
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO bws_task_logs (task_id, owner_uid, level, message, created_at)
 		VALUES (?, COALESCE((SELECT owner_uid FROM bws_tasks WHERE id = ?), 0), ?, ?, ?)
@@ -1818,17 +1802,25 @@ func (s *Store) AddBWSTaskLog(ctx context.Context, taskID int64, level string, m
 func (s *Store) GetBWSTaskLog(ctx context.Context, id int64) (model.BWSTaskLog, error) {
 	var log model.BWSTaskLog
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, level, message, created_at
-		FROM bws_task_logs
-		WHERE id = ?
-	`, id).Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt)
+		SELECT l.id, l.task_id, l.level, l.message, l.created_at,
+			COALESCE(t.name, ''), COALESCE(a.name, ''), COALESCE(u.username, '')
+		FROM bws_task_logs l
+		LEFT JOIN bws_tasks t ON t.id = l.task_id
+		LEFT JOIN accounts a ON a.id = t.account_id
+		LEFT JOIN users u ON u.uid = l.owner_uid
+		WHERE l.id = ?
+	`, id).Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt, &log.TaskName, &log.AccountName, &log.UserName)
 	return log, err
 }
 
 func (s *Store) ListBWSTaskLogs(ctx context.Context, ownerUID int64, taskID int64) ([]model.BWSTaskLog, error) {
 	query := `
-		SELECT l.id, l.task_id, l.level, l.message, l.created_at
+		SELECT l.id, l.task_id, l.level, l.message, l.created_at,
+			COALESCE(t.name, ''), COALESCE(a.name, ''), COALESCE(u.username, '')
 		FROM bws_task_logs l
+		LEFT JOIN bws_tasks t ON t.id = l.task_id
+		LEFT JOIN accounts a ON a.id = t.account_id
+		LEFT JOIN users u ON u.uid = l.owner_uid
 		WHERE l.owner_uid = ?
 	`
 	args := []any{ownerUID}
@@ -1847,7 +1839,7 @@ func (s *Store) ListBWSTaskLogs(ctx context.Context, ownerUID int64, taskID int6
 	logs := make([]model.BWSTaskLog, 0)
 	for rows.Next() {
 		var log model.BWSTaskLog
-		if err := rows.Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt); err != nil {
+		if err := rows.Scan(&log.ID, &log.TaskID, &log.Level, &log.Message, &log.CreatedAt, &log.TaskName, &log.AccountName, &log.UserName); err != nil {
 			return nil, err
 		}
 		logs = append(logs, log)

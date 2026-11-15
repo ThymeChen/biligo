@@ -13,6 +13,8 @@ export type ManagedLogRow = {
   id: number
   taskId: number
   taskName: string
+  accountName: string
+  userName: string
   level: string
   message: string
   createdAt: string

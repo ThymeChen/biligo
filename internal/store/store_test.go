@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -776,7 +775,7 @@ func TestPauseInterruptedTasks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListTaskLogs %d: %v", task.ID, err)
 		}
-		if len(logs) == 0 || logs[0].Level != "warn" || !strings.HasSuffix(logs[0].Message, interruptedTaskMessage) {
+		if len(logs) == 0 || logs[0].Level != "warn" || logs[0].Message != interruptedTaskMessage {
 			t.Fatalf("unexpected latest log for task %d: %#v", task.ID, logs)
 		}
 	}
@@ -820,13 +819,16 @@ func TestSetTaskRuntimeFillsLastCheckedAt(t *testing.T) {
 	}
 }
 
-func TestTaskLogMessageIncludesAccountAndTaskNames(t *testing.T) {
+func TestTaskLogCarriesNamesAndSurvivesSoftDelete(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
 
+	if err := store.UpsertUser(context.Background(), testOwnerUID, "测试用户", "SESSDATA=user"); err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
 	account, err := store.CreateAccount(context.Background(), testOwnerUID, model.AccountInput{Name: "主账号", Cookie: "SESSDATA=x; bili_jct=csrf"})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -836,8 +838,14 @@ func TestTaskLogMessageIncludesAccountAndTaskNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTaskLog: %v", err)
 	}
-	if log.Message != "[主账号/抢票任务] 订单已创建" {
-		t.Fatalf("task log message = %q, want account/task name prefix", log.Message)
+	if log.Message != "订单已创建" {
+		t.Fatalf("task log message = %q, want clean message without prefix", log.Message)
+	}
+	if log.TaskName != "抢票任务" || log.AccountName != "主账号" || log.UserName != "测试用户" {
+		t.Fatalf("task log names = %q/%q/%q, want 抢票任务/主账号/测试用户", log.TaskName, log.AccountName, log.UserName)
+	}
+	if log.ContextPrefix() != "[主账号/抢票任务] " {
+		t.Fatalf("task log context prefix = %q", log.ContextPrefix())
 	}
 
 	bwsTask, err := store.CreateBWSTask(context.Background(), testOwnerUID, model.BWSTaskInput{
@@ -859,8 +867,14 @@ func TestTaskLogMessageIncludesAccountAndTaskNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddBWSTaskLog: %v", err)
 	}
-	if bwsLog.Message != "[主账号/BWS 任务] 预约成功" {
-		t.Fatalf("bws log message = %q, want account/task name prefix", bwsLog.Message)
+	if bwsLog.Message != "预约成功" {
+		t.Fatalf("bws log message = %q, want clean message without prefix", bwsLog.Message)
+	}
+	if bwsLog.TaskName != "BWS 任务" || bwsLog.AccountName != "主账号" || bwsLog.UserName != "测试用户" {
+		t.Fatalf("bws log names = %q/%q/%q", bwsLog.TaskName, bwsLog.AccountName, bwsLog.UserName)
+	}
+	if bwsLog.ContextPrefix() != "[主账号/BWS 任务] " {
+		t.Fatalf("bws log context prefix = %q", bwsLog.ContextPrefix())
 	}
 
 	noAccountTask, err := store.CreateTask(context.Background(), testOwnerUID, model.TaskInput{Name: "无账号任务", PollIntervalMillis: 1000})
@@ -871,19 +885,61 @@ func TestTaskLogMessageIncludesAccountAndTaskNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTaskLog without account: %v", err)
 	}
-	if noAccountLog.Message != "[无账号任务] 等待下发" {
-		t.Fatalf("no-account log message = %q, want task name prefix", noAccountLog.Message)
+	if noAccountLog.AccountName != "" || noAccountLog.TaskName != "无账号任务" {
+		t.Fatalf("no-account log names = %q/%q", noAccountLog.AccountName, noAccountLog.TaskName)
+	}
+	if noAccountLog.ContextPrefix() != "[无账号任务] " {
+		t.Fatalf("no-account log context prefix = %q", noAccountLog.ContextPrefix())
 	}
 
 	if err := store.DeleteTask(context.Background(), task.ID); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
-	orphanLog, err := store.AddTaskLog(context.Background(), task.ID, "warn", "任务已停止")
+	if _, err := store.GetTask(context.Background(), task.ID); err == nil {
+		t.Fatal("GetTask should fail after soft delete")
+	}
+	tasks, err := store.ListTasks(context.Background(), testOwnerUID)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	for _, listed := range tasks {
+		if listed.ID == task.ID {
+			t.Fatal("ListTasks should exclude soft-deleted task")
+		}
+	}
+	deletedLog, err := store.AddTaskLog(context.Background(), task.ID, "warn", "任务已停止")
 	if err != nil {
 		t.Fatalf("AddTaskLog after delete: %v", err)
 	}
-	if orphanLog.Message != "任务已停止" {
-		t.Fatalf("orphan log message = %q, want no prefix", orphanLog.Message)
+	if deletedLog.Message != "任务已停止" || deletedLog.TaskName != "抢票任务" || deletedLog.AccountName != "主账号" {
+		t.Fatalf("post-delete log = %#v, want clean message with resolved names", deletedLog)
+	}
+	logs, err := store.ListTaskLogs(context.Background(), testOwnerUID, task.ID)
+	if err != nil {
+		t.Fatalf("ListTaskLogs after delete: %v", err)
+	}
+	if len(logs) == 0 || logs[0].TaskName != "抢票任务" || logs[0].UserName != "测试用户" {
+		t.Fatalf("listed post-delete log = %#v, want resolved task/user names", logs)
+	}
+
+	if err := store.DeleteUser(context.Background(), testOwnerUID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	if _, _, err := store.GetUser(context.Background(), testOwnerUID); err == nil {
+		t.Fatal("GetUser should fail after soft delete")
+	}
+	userDeletedLog, err := store.AddTaskLog(context.Background(), noAccountTask.ID, "info", "用户删除后写入")
+	if err != nil {
+		t.Fatalf("AddTaskLog after user delete: %v", err)
+	}
+	if userDeletedLog.UserName != "测试用户" {
+		t.Fatalf("post-user-delete log userName = %q, want 测试用户", userDeletedLog.UserName)
+	}
+	if err := store.UpsertUser(context.Background(), testOwnerUID, "测试用户", "SESSDATA=user"); err != nil {
+		t.Fatalf("UpsertUser revive: %v", err)
+	}
+	if _, username, err := store.GetUser(context.Background(), testOwnerUID); err != nil || username != "测试用户" {
+		t.Fatalf("GetUser after re-login = %q, %v; want revived user", username, err)
 	}
 }
 

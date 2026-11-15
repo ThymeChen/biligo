@@ -409,11 +409,19 @@ type TaskInput struct {
 }
 
 type TaskLog struct {
-	ID        int64  `json:"id"`
-	TaskID    int64  `json:"taskId"`
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	CreatedAt string `json:"createdAt"`
+	ID          int64  `json:"id"`
+	TaskID      int64  `json:"taskId"`
+	Level       string `json:"level"`
+	Message     string `json:"message"`
+	CreatedAt   string `json:"createdAt"`
+	TaskName    string `json:"taskName"`
+	AccountName string `json:"accountName"`
+	UserName    string `json:"userName"`
+}
+
+// ContextPrefix 生成日志写入文件时的账号/任务名称前缀，名称缺失时仅保留可用部分。
+func (l TaskLog) ContextPrefix() string {
+	return logContextPrefix(l.AccountName, l.TaskName)
 }
 
 type TaskRuntimeUpdate struct {
@@ -542,11 +550,35 @@ type BWSTaskInput struct {
 }
 
 type BWSTaskLog struct {
-	ID        int64  `json:"id"`
-	TaskID    int64  `json:"taskId"`
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	CreatedAt string `json:"createdAt"`
+	ID          int64  `json:"id"`
+	TaskID      int64  `json:"taskId"`
+	Level       string `json:"level"`
+	Message     string `json:"message"`
+	CreatedAt   string `json:"createdAt"`
+	TaskName    string `json:"taskName"`
+	AccountName string `json:"accountName"`
+	UserName    string `json:"userName"`
+}
+
+// ContextPrefix 生成日志写入文件时的账号/任务名称前缀，名称缺失时仅保留可用部分。
+func (l BWSTaskLog) ContextPrefix() string {
+	return logContextPrefix(l.AccountName, l.TaskName)
+}
+
+// logContextPrefix 按账号名/任务名生成 [账号名/任务名] 前缀，名称缺失时仅保留可用部分。
+func logContextPrefix(accountName string, taskName string) string {
+	accountName = strings.TrimSpace(accountName)
+	taskName = strings.TrimSpace(taskName)
+	switch {
+	case accountName != "" && taskName != "":
+		return "[" + accountName + "/" + taskName + "] "
+	case accountName != "":
+		return "[" + accountName + "] "
+	case taskName != "":
+		return "[" + taskName + "] "
+	default:
+		return ""
+	}
 }
 
 type BWSTaskRuntimeUpdate struct {
