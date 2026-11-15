@@ -272,7 +272,7 @@ function createStore() {
           accountName: log.accountName,
           userName: log.userName,
           level: log.level,
-          message: log.message,
+          message: log.message.replace(/^\[.*\/.*]\s/, ''),
           createdAt: log.createdAt,
         }))
     const bwsRows = selectedLogKind.value === 'ticket'
@@ -286,7 +286,7 @@ function createStore() {
           accountName: log.accountName,
           userName: log.userName,
           level: log.level,
-          message: log.message,
+          message: log.message.replace(/^\[.*\/.*]\s/, ''),
           createdAt: log.createdAt,
         }))
     return [...ticketRows, ...bwsRows].sort((a, b) => compareDateText(b.createdAt, a.createdAt)).slice(0, 200)
