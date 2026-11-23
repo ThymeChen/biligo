@@ -68,6 +68,7 @@ function createStore() {
   const error = ref('')
   const notice = ref('')
   const health = ref<Health | null>(null)
+  const announcement = ref('')
   const session = ref<SessionSummary | null>(null)
   const mobileNavOpen = ref(false)
   const userAuth = reactive({
@@ -417,6 +418,15 @@ function createStore() {
         selectedBWSTaskId.value = bwsTasks.value[0].id
       }
     })
+  }
+
+  async function loadAnnouncement() {
+    try {
+      const data = await api.announcement()
+      announcement.value = (data.content ?? '').trim()
+    } catch {
+      announcement.value = ''
+    }
   }
 
   async function initializeUserAuth() {
@@ -2146,7 +2156,7 @@ function createStore() {
   }
 
   onMounted(async () => {
-    await initializeUserAuth()
+    await Promise.all([loadAnnouncement(), initializeUserAuth()])
   })
 
   onUnmounted(() => {
@@ -2161,6 +2171,7 @@ function createStore() {
     error,
     notice,
     health,
+    announcement,
     session,
     mobileNavOpen,
     userAuth,

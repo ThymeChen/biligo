@@ -261,6 +261,7 @@ func newRuntime(ctx context.Context, configPath string, consoleWriter io.Writer)
 	} else {
 		logger.Infof("Web 控制台未嵌入，仅启用 API 服务。")
 	}
+	routerOptions = append(routerOptions, httpapi.WithAnnouncement(cfg.Announcement.Content))
 
 	// 用配置文件中的 OneBot 连接信息构造通知发送器，供 QQ 类型通知使用。
 	notificationSender := notify.NewHTTPSender(nil)

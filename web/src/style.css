@@ -332,6 +332,10 @@ p {
   padding: 20px 14px;
 }
 
+.announcement-text {
+  white-space: pre-line;
+}
+
 .global-message-alert .el-alert__content,
 .qr-message-alert .el-alert__content {
   flex: 1;

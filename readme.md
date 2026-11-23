@@ -54,6 +54,9 @@ database:
 auth:
   session_ttl: "24h"
 
+announcement:
+  content: ""
+
 onebot:
   mode: "disabled"
   host: "127.0.0.1"
@@ -75,6 +78,7 @@ logging:
 - `server.addr`：服务监听地址和端口，默认 `:8080`。
 - `database.path`：本地 SQLite 数据库路径，默认 `data/biligo.db`。
 - `auth.session_ttl`：扫码登录后的 Token 有效期，使用 Go duration 格式（如 `30m`、`24h`），默认 `24h`。
+- `announcement.content`：控制台公告内容，支持多行；留空则不显示。
 - `onebot.mode`：OneBot 连接开关，可选 `disabled`、`http`、`https`、`ws`、`wss`、`reverse_ws`。
 - `onebot.host` / `onebot.port`：OneBot 服务地址；`reverse_ws` 模式下为后端监听地址（`host` 可留空）。
 - `onebot.ws_path`：WebSocket 路径，`ws`/`wss` 默认 `/`，`reverse_ws` 默认 `/onebot/ws`。

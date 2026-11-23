@@ -9,6 +9,10 @@ auth:
   # 留空或设置为 0 时使用默认值 24h。
   session_ttl: "24h"
 
+announcement:
+  # 控制台公告内容，支持多行 YAML；留空则不显示。
+  content: ""
+
 onebot:
   # OneBot 连接方式开关：disabled / http / https / ws / wss / reverse_ws。
   # http/https 使用 HTTP API；ws/wss 为后端主动连接的正向 WebSocket；

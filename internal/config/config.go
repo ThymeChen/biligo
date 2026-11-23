@@ -27,12 +27,13 @@ const (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Auth     AuthConfig     `yaml:"auth"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	OneBot   OneBotConfig   `yaml:"onebot"`
-	Path     string         `yaml:"-"`
+	Server       ServerConfig       `yaml:"server"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Auth         AuthConfig         `yaml:"auth"`
+	Announcement AnnouncementConfig `yaml:"announcement"`
+	Logging      LoggingConfig      `yaml:"logging"`
+	OneBot       OneBotConfig       `yaml:"onebot"`
+	Path         string             `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -47,6 +48,12 @@ type DatabaseConfig struct {
 type AuthConfig struct {
 	// SessionTTL 是扫码登录后签发的 Bearer Token 有效期，使用 Go duration 格式（如 30m、24h）。
 	SessionTTL time.Duration `yaml:"session_ttl"`
+}
+
+// AnnouncementConfig 描述控制台公告配置。
+type AnnouncementConfig struct {
+	// Content 是公告内容，支持多行；留空则不显示公告。
+	Content string `yaml:"content"`
 }
 
 // OneBotConfig 描述 OneBot v11 连接配置，用于向绑定的 QQ 号推送通知。
@@ -213,6 +220,7 @@ func Load(path string) (Config, error) {
 	if cfg.Auth.SessionTTL <= 0 {
 		cfg.Auth.SessionTTL = defaultAuthSessionTTL
 	}
+	cfg.Announcement.Content = strings.TrimSpace(cfg.Announcement.Content)
 
 	return cfg, nil
 }

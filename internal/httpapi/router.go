@@ -41,11 +41,14 @@ type Handler struct {
 	user      *userauth.Manager
 	logger    *applog.Logger
 	notify    notify.Sender
+
+	announcement string
 }
 
 type RouterOptions struct {
 	WebFS              fs.FS
 	NotificationSender notify.Sender
+	Announcement       string
 }
 
 type Runtime struct {
@@ -70,6 +73,12 @@ func WithWebFS(webFS fs.FS) RouterOption {
 func WithNotificationSender(sender notify.Sender) RouterOption {
 	return func(options *RouterOptions) {
 		options.NotificationSender = sender
+	}
+}
+
+func WithAnnouncement(content string) RouterOption {
+	return func(options *RouterOptions) {
+		options.Announcement = content
 	}
 }
 
@@ -118,10 +127,13 @@ func NewRuntime(store *store.Store, user *userauth.Manager, logger *applog.Logge
 		user:      user,
 		logger:    logger,
 		notify:    notificationSender,
+
+		announcement: options.Announcement,
 	}
 	api := router.Group("/api")
 	{
 		api.GET("/health", handler.health)
+		api.GET("/announcement", handler.getAnnouncement)
 		api.POST("/user-auth/qr/start", handler.userQRStart)
 		api.POST("/user-auth/qr/poll", handler.userQRPoll)
 
@@ -258,6 +270,10 @@ func recovery(logger *applog.Logger) gin.HandlerFunc {
 		}
 		c.AbortWithStatus(http.StatusInternalServerError)
 	})
+}
+
+func (h *Handler) getAnnouncement(c *gin.Context) {
+	c.JSON(http.StatusOK, model.Announcement{Content: h.announcement})
 }
 
 func (h *Handler) health(c *gin.Context) {

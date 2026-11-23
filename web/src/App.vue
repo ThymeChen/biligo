@@ -16,6 +16,7 @@ const {
   error,
   notice,
   health,
+  announcement,
   activeSection,
   mobileNavOpen,
   setActiveSection,
@@ -86,6 +87,9 @@ const {
         </div>
       </header>
 
+      <el-alert v-if="announcement" type="info" show-icon :closable="false" class="global-message-alert announcement-alert">
+        <template #title><span class="announcement-text">{{ announcement }}</span></template>
+      </el-alert>
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="global-message-alert" />
       <el-alert v-if="notice" :title="notice" type="success" show-icon :closable="false" class="global-message-alert" />
 

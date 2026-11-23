@@ -4,6 +4,10 @@ export interface Health {
   time: string
 }
 
+export interface Announcement {
+  content: string
+}
+
 export interface SessionSummary {
   status: string
   message: string
@@ -565,6 +569,7 @@ async function request<T>(path: string, options: APIRequestInit = {}): Promise<T
 
 export const api = {
   health: () => request<Health>('/api/health'),
+  announcement: () => request<Announcement>('/api/announcement', { skipUnauthorizedHandler: true }),
   startUserQRLogin: () =>
     request<QRLoginStartResponse>('/api/user-auth/qr/start', { method: 'POST', skipUnauthorizedHandler: true }),
   pollUserQRLogin: (payload: QRLoginPollInput) =>

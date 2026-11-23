@@ -57,6 +57,10 @@ type Health struct {
 	Time     string `json:"time"`
 }
 
+type Announcement struct {
+	Content string `json:"content"`
+}
+
 type SessionSummary struct {
 	Status             string `json:"status"`
 	Message            string `json:"message"`

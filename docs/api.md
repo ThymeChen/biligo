@@ -6,7 +6,7 @@
 
 - 基础地址：`http://localhost:8080/api`
 - 请求体：`Content-Type: application/json`
-- 除 `GET /api/health`、`POST /api/user-auth/qr/start` 与 `POST /api/user-auth/qr/poll` 外，所有接口都需要登录鉴权。
+- 除 `GET /api/health`、`GET /api/announcement`、`POST /api/user-auth/qr/start` 与 `POST /api/user-auth/qr/poll` 外，所有接口都需要登录鉴权。
 - 登录鉴权请求头：`Authorization: Bearer <token>`。
 - 时间字段：字符串，当前后端使用 RFC3339 或前端提交的原始时间字符串。
 - 空列表：返回 `[]`。
@@ -46,6 +46,20 @@
   "status": "ok",
   "database": "ok",
   "time": "2026-06-12T21:47:14+08:00"
+}
+```
+
+## 系统公告
+
+### GET `/api/announcement`
+
+公开接口，返回配置文件中的公告内容；`content` 为空表示不显示公告。
+
+响应：
+
+```json
+{
+  "content": "今晚 23:00 维护"
 }
 ```
 

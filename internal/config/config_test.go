@@ -266,6 +266,27 @@ onebot:
 	}
 }
 
+func TestLoadAnnouncement(t *testing.T) {
+	t.Setenv("BILIGO_CONFIG", "")
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+announcement:
+  content: |
+    今晚 23:00 维护
+    请提前保存任务
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Announcement.Content != "今晚 23:00 维护\n请提前保存任务" {
+		t.Fatalf("Announcement.Content = %q", cfg.Announcement.Content)
+	}
+}
+
 func TestLoadLogLevelsFromConfigAndEnv(t *testing.T) {
 	t.Setenv("BILIGO_CONFIG", "")
 	t.Setenv("BILIGO_LOG_LEVELS", "")

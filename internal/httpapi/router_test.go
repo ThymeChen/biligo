@@ -354,6 +354,29 @@ func TestUserAuthProtectsEventsAndAllowsQueryToken(t *testing.T) {
 	}
 }
 
+func TestAnnouncementAPI(t *testing.T) {
+	taskStore, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer taskStore.Close()
+
+	router, _ := newTestRouterWithLogger(taskStore, applog.NewWithWriter([]string{"none"}, nil), WithAnnouncement("今晚 23:00 维护"))
+	req := httptest.NewRequest(http.MethodGet, "/api/announcement", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("announcement status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var announcement model.Announcement
+	if err := json.Unmarshal(resp.Body.Bytes(), &announcement); err != nil {
+		t.Fatalf("decode announcement: %v", err)
+	}
+	if announcement.Content != "今晚 23:00 维护" {
+		t.Fatalf("unexpected announcement: %#v", announcement)
+	}
+}
+
 func TestNotificationAPIs(t *testing.T) {
 	taskStore, err := store.Open(":memory:")
 	if err != nil {
