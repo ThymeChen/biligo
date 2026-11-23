@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Check, Close, Delete, Document, Edit, SwitchButton } from '@element-plus/icons-vue'
-import { notificationProviderLabel, notificationTestTagType, notificationTokenLabel, notificationTokenPlaceholder } from '../app/format'
+import { notificationConfigSummary, notificationProviderLabel, notificationTestTagType, notificationTokenLabel, notificationTokenPlaceholder } from '../app/format'
 import { useAppStore } from '../app/useAppStore'
 
 const {
@@ -32,10 +32,18 @@ const {
         <el-radio-group v-model="notificationForm.provider">
           <el-radio-button label="pushplus">PushPlus</el-radio-button>
           <el-radio-button label="bark">Bark</el-radio-button>
+          <el-radio-button label="qq">QQ</el-radio-button>
         </el-radio-group>
       </el-form-item>
       <el-form-item required :label="notificationTokenLabel(notificationForm.provider)">
         <el-input
+          v-if="notificationForm.provider === 'qq'"
+          v-model="notificationForm.config.qq"
+          clearable
+          :placeholder="notificationTokenPlaceholder(notificationForm.provider)"
+        />
+        <el-input
+          v-else
           v-model="notificationForm.config.token"
           type="textarea"
           :rows="3"
@@ -44,7 +52,7 @@ const {
       </el-form-item>
       <el-alert type="info" show-icon :closable="false" class="form-tip-alert">
         <template #title>
-          PushPlus 用 Token 推送；Bark 可填写 App 中的 Token，也可填写自建服务完整推送地址。
+          PushPlus 用 Token 推送；Bark 可填写 App 中的 Token，也可填写自建服务完整推送地址；QQ 会通过服务端配置的 OneBot 服务向绑定的 QQ 号发送私聊消息。
         </template>
       </el-alert>
       <el-button native-type="submit" type="primary" :icon="Document" :disabled="!canSaveNotification" :loading="loading">
@@ -61,7 +69,7 @@ const {
         <div>
           <h4>{{ notification.name }}</h4>
           <p>{{ notificationProviderLabel(notification.provider) }}</p>
-          <small>{{ notification.config?.token || '未填写配置' }}</small>
+          <small>{{ notificationConfigSummary(notification.provider, notification.config) }}</small>
           <small v-if="notification.lastTestStatus">
             最近检测：{{ notification.lastTestMessage || '-' }} {{ notification.lastTestedAt ? `· ${notification.lastTestedAt}` : '' }}
           </small>

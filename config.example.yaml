@@ -5,8 +5,16 @@ database:
   path: "data/biligo.db"
 
 auth:
-  # Panel password. Leave empty to generate and write one on server startup.
-  password: ""
+  # 扫码登录后签发的 Bearer Token 有效期，使用 Go duration 格式（例如 30m、24h）。
+  # 留空或设置为 0 时使用默认值 24h。
+  session_ttl: "24h"
+
+onebot:
+  # OneBot v11 HTTP API 服务地址（例如 NapCat / Lagrange 的 HTTP 接口）。
+  # 留空则无法使用 QQ 类型通知。
+  api_url: ""
+  # OneBot 服务端的 access_token；未设置可留空。
+  access_token: ""
 
 logging:
   # Available levels: info, warn, error. Use "none" to disable application logs.

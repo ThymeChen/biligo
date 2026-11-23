@@ -372,17 +372,34 @@ export function notificationProviderLabel(provider: string) {
   if (provider === 'bark') {
     return 'Bark'
   }
+  if (provider === 'qq') {
+    return 'QQ'
+  }
   return provider || '-'
 }
 
 export function notificationTokenLabel(provider: string) {
+  if (provider === 'qq') {
+    return 'QQ 号'
+  }
   return provider === 'bark' ? 'Bark Token 或完整推送地址' : 'PushPlus Token'
 }
 
 export function notificationTokenPlaceholder(provider: string) {
+  if (provider === 'qq') {
+    return '填写要绑定的 QQ 号'
+  }
   return provider === 'bark'
     ? '例如：jmGYKxxxxx 或 https://bark.example.app/jmGYKxxxxx'
     : '填写 PushPlus Token'
+}
+
+export function notificationConfigSummary(provider: string, config?: Record<string, string>) {
+  if (provider === 'qq') {
+    const qq = (config?.qq ?? '').trim()
+    return qq ? `QQ：${qq}` : '未填写 QQ 号'
+  }
+  return (config?.token ?? '').trim() || '未填写配置'
 }
 
 export function notificationTestTagType(status: string) {

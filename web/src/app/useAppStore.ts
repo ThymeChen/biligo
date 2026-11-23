@@ -108,6 +108,7 @@ function createStore() {
     provider: 'pushplus',
     config: {
       token: '',
+      qq: '',
     },
   })
 
@@ -324,9 +325,10 @@ function createStore() {
         (isHybridTaskForm.value && taskForm.rushPollIntervalMillis > 0 && taskForm.restockPollIntervalMillis > 0)),
   )
   const canSaveNotification = computed(
-    () => notificationForm.name.trim() !== '' &&
-      ['pushplus', 'bark'].includes(notificationForm.provider) &&
-      (notificationForm.config.token ?? '').trim() !== '',
+    () =>
+      notificationForm.name.trim() !== '' &&
+      ['pushplus', 'bark', 'qq'].includes(notificationForm.provider) &&
+      ((notificationForm.provider === 'qq' ? notificationForm.config.qq : notificationForm.config.token) ?? '').trim() !== '',
   )
   const canSaveProxyGroup = computed(
     () =>
@@ -791,6 +793,7 @@ function createStore() {
       provider: 'pushplus',
       config: {
         token: '',
+        qq: '',
       },
     })
   }
@@ -802,6 +805,7 @@ function createStore() {
       provider: notification.provider,
       config: {
         token: notification.config?.token ?? '',
+        qq: notification.config?.qq ?? '',
       },
     })
     activeSection.value = 'notifications'
@@ -809,12 +813,14 @@ function createStore() {
 
   async function saveNotification() {
     await run(async () => {
+      // QQ 类型保存 QQ 号，其余类型仍保存 token。
+      const config: Record<string, string> = notificationForm.provider === 'qq'
+        ? { qq: (notificationForm.config.qq ?? '').trim() }
+        : { token: (notificationForm.config.token ?? '').trim() }
       const payload: NotificationInput = {
         name: notificationForm.name.trim(),
         provider: notificationForm.provider,
-        config: {
-          token: (notificationForm.config.token ?? '').trim(),
-        },
+        config,
       }
       if (editingNotificationId.value) {
         await api.updateNotification(editingNotificationId.value, payload)

@@ -118,6 +118,26 @@ func TestUserAuthProtectsAPIs(t *testing.T) {
 	}
 }
 
+// 面板已改为仅扫码登录，旧的面板密码登录接口不应再注册。
+func TestPanelPasswordAuthRemoved(t *testing.T) {
+	taskStore, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer taskStore.Close()
+
+	router, _ := newTestRouter(taskStore)
+	for _, path := range []string{"/api/panel-auth/login", "/api/panel-auth/session", "/api/panel-auth/logout"} {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"password":"panel-password"}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", path, resp.Code)
+		}
+	}
+}
+
 func TestAccountImportExportAPIs(t *testing.T) {
 	taskStore, err := store.Open(":memory:")
 	if err != nil {
@@ -404,6 +424,56 @@ func TestNotificationAPIs(t *testing.T) {
 	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("delete notification status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestNotificationQQAPI(t *testing.T) {
+	taskStore, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer taskStore.Close()
+
+	sender := &fakeNotificationSender{}
+	router, token := newTestRouterWithLogger(taskStore, applog.NewWithWriter([]string{"none"}, nil), WithNotificationSender(sender))
+
+	// QQ 号非数字时应拒绝保存。
+	body := bytes.NewBufferString(`{"name":"QQ","provider":"qq","config":{"qq":"not-a-qq"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/notifications", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid qq status = %d, want 400, body = %s", resp.Code, resp.Body.String())
+	}
+
+	body = bytes.NewBufferString(`{"name":"QQ","provider":"qq","config":{"qq":"123456789"}}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/notifications", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create qq notification status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var notification model.Notification
+	if err := json.Unmarshal(resp.Body.Bytes(), &notification); err != nil {
+		t.Fatalf("decode notification: %v", err)
+	}
+	if notification.Provider != model.NotificationProviderQQ || notification.Config["qq"] != "123456789" {
+		t.Fatalf("unexpected notification: %#v", notification)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/notifications/1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("test qq notification status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if sender.calls != 1 {
+		t.Fatalf("sender calls = %d, want 1", sender.calls)
 	}
 }
 

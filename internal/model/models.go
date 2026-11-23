@@ -11,6 +11,7 @@ const (
 
 	NotificationProviderPushPlus = "pushplus"
 	NotificationProviderBark     = "bark"
+	NotificationProviderQQ       = "qq"
 
 	ProxyGroupTypeStatic = "static"
 	ProxyGroupTypeAPI    = "api"
@@ -602,9 +603,24 @@ func NormalizeNotificationProvider(provider string) string {
 		return NotificationProviderPushPlus
 	case NotificationProviderBark:
 		return NotificationProviderBark
+	case NotificationProviderQQ:
+		return NotificationProviderQQ
 	default:
 		return ""
 	}
+}
+
+// ParseQQNumber 解析并校验 QQ 号，必须是正整数。
+func ParseQQNumber(raw string) (int64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	qq, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || qq <= 0 {
+		return 0, false
+	}
+	return qq, true
 }
 
 func NormalizeProxyGroupType(groupType string) string {

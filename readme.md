@@ -38,7 +38,7 @@ biligo/
   config.yaml
 ```
 
-可以从 `config.example.yaml` 复制一份作为 `config.yaml`。如果启动时没有配置文件，程序会自动生成 `config.yaml`，并在控制台输出面板登录密码。
+可以从 `config.example.yaml` 复制一份作为 `config.yaml`。如果启动时没有配置文件，程序会使用内置默认配置。
 
 ### 2. 修改配置
 
@@ -52,7 +52,7 @@ database:
   path: "data/biligo.db"
 
 auth:
-  password: ""
+  session_ttl: "24h"
 
 logging:
   levels:
@@ -67,7 +67,7 @@ logging:
 
 - `server.addr`：服务监听地址和端口，默认 `:8080`。
 - `database.path`：本地 SQLite 数据库路径，默认 `data/biligo.db`。
-- `auth.password`：面板登录密码。留空时会自动生成并写入配置文件。
+- `auth.session_ttl`：扫码登录后的 Token 有效期，使用 Go duration 格式（如 `30m`、`24h`），默认 `24h`。
 - `logging.file.enabled`：是否写入日志文件。
 
 ### 3. 启动程序
@@ -89,7 +89,6 @@ Windows 版本默认以系统托盘方式后台运行，不显示控制台窗口
 
 启动后请留意控制台或日志输出：
 
-- 若自动生成了面板密码，会输出密码和写入的配置文件路径。
 - 若二进制已嵌入前端，会提示 Web 控制台使用嵌入前端资源。
 - 若未嵌入前端，会提示仅启用 API 服务。
 
@@ -101,7 +100,7 @@ Windows 版本默认以系统托盘方式后台运行，不显示控制台窗口
 http://127.0.0.1:8080/
 ```
 
-首次进入面板时输入 `auth.password` 中配置的密码。登录后即可在 Web 控制台中配置账号、查询票务信息、创建任务并查看运行状态。
+首次进入面板时使用哔哩哔哩 App 扫码登录，无需输入面板密码。登录后即可在 Web 控制台中配置账号、查询票务信息、创建任务并查看运行状态。
 
 如果你只拿到了未嵌入前端的二进制文件，则浏览器页面不会由程序提供，但 `/api` 仍可访问，例如：
 
@@ -132,7 +131,7 @@ mkdir -p data logs
 cp config.example.yaml config.yaml
 ```
 
-如果没有提前准备 `config.yaml`，程序也会在容器内自动生成 `/app/config.yaml`，并在启动日志中输出面板登录密码。
+如果没有提前准备 `config.yaml`，程序会使用内置默认配置。
 
 ### 2. 选择镜像部署（三选一）
 
@@ -207,7 +206,7 @@ docker run -d \
 http://127.0.0.1:8080/
 ```
 
-查看启动日志和自动生成的面板密码：
+查看启动日志：
 
 ```bash
 docker logs -f biligo
@@ -224,14 +223,13 @@ docker run -d \
   -v "$PWD/logs:/app/logs" \
   -e TZ="Asia/Shanghai" \
   -e BILIGO_ADDR=":18080" \
-  -e BILIGO_PANEL_PASSWORD="your-panel-password" \
   "$IMAGE"
 ```
 
 常用环境变量：
 
 - `BILIGO_ADDR`：监听地址，例如 `:8080`。
-- `BILIGO_PANEL_PASSWORD`：面板登录密码。
+- `BILIGO_AUTH_TTL`：扫码登录 Token 有效期，例如 `24h`。
 - `BILIGO_DB`：数据库路径，例如 `/app/data/biligo.db`。
 - `BILIGO_LOG_LEVELS`：日志等级，例如 `info,warn,error`，设置为 `none` 可关闭输出。
 - `BILIGO_LOG_COLOR`：控制台颜色，支持 `auto`、`always`、`never`。

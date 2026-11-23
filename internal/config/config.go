@@ -2,16 +2,22 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+const defaultAuthSessionTTL = 24 * time.Hour
+
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
+	Auth     AuthConfig     `yaml:"auth"`
 	Logging  LoggingConfig  `yaml:"logging"`
+	OneBot   OneBotConfig   `yaml:"onebot"`
 	Path     string         `yaml:"-"`
 }
 
@@ -21,6 +27,18 @@ type ServerConfig struct {
 
 type DatabaseConfig struct {
 	Path string `yaml:"path"`
+}
+
+// AuthConfig 描述登录鉴权相关配置。
+type AuthConfig struct {
+	// SessionTTL 是扫码登录后签发的 Bearer Token 有效期，使用 Go duration 格式（如 30m、24h）。
+	SessionTTL time.Duration `yaml:"session_ttl"`
+}
+
+// OneBotConfig 描述 OneBot v11 HTTP API 服务端的连接信息，用于向绑定的 QQ 号推送通知。
+type OneBotConfig struct {
+	APIURL      string `yaml:"api_url"`
+	AccessToken string `yaml:"access_token"`
 }
 
 type LoggingConfig struct {
@@ -43,6 +61,9 @@ func Load(path string) (Config, error) {
 		},
 		Database: DatabaseConfig{
 			Path: "data/biligo.db",
+		},
+		Auth: AuthConfig{
+			SessionTTL: defaultAuthSessionTTL,
 		},
 		Logging: LoggingConfig{
 			Levels: LogLevels{"info", "warn", "error"},
@@ -91,6 +112,25 @@ func Load(path string) (Config, error) {
 	}
 	if color := strings.TrimSpace(os.Getenv("BILIGO_LOG_COLOR")); color != "" {
 		cfg.Logging.Color = normalizeLogColor(color)
+	}
+	if oneBotURL := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_URL")); oneBotURL != "" {
+		cfg.OneBot.APIURL = oneBotURL
+	}
+	if oneBotToken := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_TOKEN")); oneBotToken != "" {
+		cfg.OneBot.AccessToken = oneBotToken
+	}
+	cfg.OneBot.APIURL = strings.TrimRight(strings.TrimSpace(cfg.OneBot.APIURL), "/")
+	cfg.OneBot.AccessToken = strings.TrimSpace(cfg.OneBot.AccessToken)
+
+	if ttl := strings.TrimSpace(os.Getenv("BILIGO_AUTH_TTL")); ttl != "" {
+		parsed, err := time.ParseDuration(ttl)
+		if err != nil {
+			return Config{}, fmt.Errorf("BILIGO_AUTH_TTL 不是有效的时长：%w", err)
+		}
+		cfg.Auth.SessionTTL = parsed
+	}
+	if cfg.Auth.SessionTTL <= 0 {
+		cfg.Auth.SessionTTL = defaultAuthSessionTTL
 	}
 
 	return cfg, nil

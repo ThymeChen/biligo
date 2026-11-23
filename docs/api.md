@@ -6,8 +6,8 @@
 
 - 基础地址：`http://localhost:8080/api`
 - 请求体：`Content-Type: application/json`
-- 除 `GET /api/health` 与 `POST /api/panel-auth/login` 外，所有接口都需要面板鉴权。
-- 面板鉴权请求头：`Authorization: Bearer <token>`。
+- 除 `GET /api/health`、`POST /api/user-auth/qr/start` 与 `POST /api/user-auth/qr/poll` 外，所有接口都需要登录鉴权。
+- 登录鉴权请求头：`Authorization: Bearer <token>`。
 - 时间字段：字符串，当前后端使用 RFC3339 或前端提交的原始时间字符串。
 - 空列表：返回 `[]`。
 - 删除成功：返回 `204 No Content`。
@@ -28,7 +28,7 @@
 | `201` | 创建成功 |
 | `204` | 删除成功，无响应体 |
 | `400` | 请求参数错误 |
-| `401` | 面板未登录、密码错误或 token 已失效 |
+| `401` | 未登录或 token 已失效 |
 | `404` | 资源不存在 |
 | `500` | 服务端错误 |
 | `503` | 健康检查失败 |
@@ -49,17 +49,38 @@
 }
 ```
 
-## 面板鉴权
+## 用户登录鉴权（扫码）
 
-### POST `/api/panel-auth/login`
+面板不提供密码登录。打开面板后需要使用哔哩哔哩 App 扫码登录；扫码确认成功后后端签发 Bearer Token，有效期由 `auth.session_ttl` 配置（默认 24 小时，环境变量 `BILIGO_AUTH_TTL` 可覆盖），服务重启后已签发 Token 失效。扫码登录会同时把对应 Bilibili 账号 Cookie 保存为当前用户的账号。
 
-使用本地面板密码登录。面板密码来自 `auth.password` 配置；若未配置，服务启动会生成随机密码、写入配置文件并输出到控制台。Token 有效期为 24 小时，服务重启后已签发 Token 失效。
+### POST `/api/user-auth/qr/start`
+
+生成面板登录二维码。该接口无需鉴权。
+
+请求体：无。
+
+响应：
+
+```json
+{
+  "ok": true,
+  "loginUrl": "https://passport.bilibili.com/h5-app/passport/login/scan?...",
+  "qrcodeKey": "xxxxx",
+  "qrImageDataUrl": "data:image/png;base64,...",
+  "expiresInSeconds": 180,
+  "nextAction": "show_qr_and_confirm_scan"
+}
+```
+
+### POST `/api/user-auth/qr/poll`
+
+轮询扫码登录状态。该接口无需鉴权。
 
 请求：
 
 ```json
 {
-  "password": "panel-password"
+  "qrcodeKey": "xxxxx"
 }
 ```
 
@@ -67,12 +88,33 @@
 
 ```json
 {
-  "token": "random-bearer-token",
-  "expiresAt": "2026-06-15T20:00:00+08:00"
+  "ok": true,
+  "status": "waiting_scan",
+  "message": "二维码未扫码"
 }
 ```
 
-### GET `/api/panel-auth/session`
+扫码确认成功后，响应会额外返回登录信息：
+
+```json
+{
+  "ok": true,
+  "status": "confirmed",
+  "message": "登录成功",
+  "username": "哔哩哔哩用户名",
+  "token": "random-bearer-token",
+  "user": {
+    "uid": 123456,
+    "username": "哔哩哔哩用户名"
+  },
+  "expiresAt": "2026-06-15T20:00:00+08:00",
+  "account": {
+    "id": 1
+  }
+}
+```
+
+### GET `/api/user-auth/session`
 
 校验当前 Bearer Token 是否仍有效。该接口需要 `Authorization: Bearer <token>`。
 
@@ -80,13 +122,17 @@
 
 ```json
 {
-  "expiresAt": "2026-06-15T20:00:00+08:00"
+  "expiresAt": "2026-06-15T20:00:00+08:00",
+  "user": {
+    "uid": 123456,
+    "username": "哔哩哔哩用户名"
+  }
 }
 ```
 
-### POST `/api/panel-auth/logout`
+### POST `/api/user-auth/logout`
 
-退出当前面板登录，会使当前 Bearer Token 立即失效。该接口需要 `Authorization: Bearer <token>`。
+退出当前登录，会使当前 Bearer Token 立即失效。该接口需要 `Authorization: Bearer <token>`。
 
 响应：`204 No Content`。
 
@@ -1155,7 +1201,7 @@ BWS 预约功能使用独立任务表和日志表，不复用会员购抢票 `ta
 
 ## 通知管理
 
-通知接口用于在任务成功进入支付前状态时推送提醒。当前支持 `pushplus` 和 `bark`，可同时启用多个接口。
+通知接口用于在任务成功进入支付前状态时推送提醒。当前支持 `pushplus`、`bark` 和 `qq`，可同时启用多个接口。
 
 通知对象：
 
@@ -1199,6 +1245,8 @@ BWS 预约功能使用独立任务表和日志表，不复用会员购抢票 `ta
 ```
 
 `provider=bark` 时，`config.token` 可以填写 Bark Token，也可以填写完整自建推送地址。
+
+`provider=qq` 时，`config.qq` 填写要绑定的 QQ 号。后端会通过配置文件中的 `onebot.api_url`（OneBot v11 HTTP API 服务地址）向该 QQ 号发送私聊消息；`onebot.access_token` 用于需要鉴权的服务端。
 
 响应：`201 Created`，返回通知对象。
 

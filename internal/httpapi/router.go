@@ -1597,16 +1597,25 @@ func validateNotificationInput(c *gin.Context, input model.NotificationInput) bo
 	}
 	provider := model.NormalizeNotificationProvider(input.Provider)
 	if provider == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "通知类型必须是 pushplus 或 bark"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "通知类型必须是 pushplus、bark 或 qq"})
 		return false
 	}
-	if strings.TrimSpace(input.Config["token"]) == "" {
-		if provider == model.NotificationProviderPushPlus {
+	switch provider {
+	case model.NotificationProviderQQ:
+		if _, ok := model.ParseQQNumber(input.Config["qq"]); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "QQ 号不能为空且必须是正整数"})
+			return false
+		}
+	case model.NotificationProviderPushPlus:
+		if strings.TrimSpace(input.Config["token"]) == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "PushPlus Token 不能为空"})
 			return false
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Bark Token 或完整推送地址不能为空"})
-		return false
+	case model.NotificationProviderBark:
+		if strings.TrimSpace(input.Config["token"]) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Bark Token 或完整推送地址不能为空"})
+			return false
+		}
 	}
 	return true
 }

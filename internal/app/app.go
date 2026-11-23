@@ -11,12 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fdcs99/biligo/internal/applog"
 	"github.com/fdcs99/biligo/internal/bwsrunner"
 	"github.com/fdcs99/biligo/internal/config"
 	"github.com/fdcs99/biligo/internal/httpapi"
+	"github.com/fdcs99/biligo/internal/notify"
 	"github.com/fdcs99/biligo/internal/runner"
 	"github.com/fdcs99/biligo/internal/store"
 	"github.com/fdcs99/biligo/internal/userauth"
@@ -260,6 +260,15 @@ func newRuntime(ctx context.Context, configPath string, consoleWriter io.Writer)
 		logger.Infof("Web 控制台未嵌入，仅启用 API 服务。")
 	}
 
+	// 用配置文件中的 OneBot 连接信息构造通知发送器，供 QQ 类型通知使用。
+	notificationSender := notify.NewHTTPSender(nil)
+	notificationSender.OneBotAPIURL = cfg.OneBot.APIURL
+	notificationSender.OneBotAccessToken = cfg.OneBot.AccessToken
+	if cfg.OneBot.APIURL == "" {
+		logger.Warnf("未配置 onebot.api_url，QQ 类型通知将无法发送。")
+	}
+	routerOptions = append(routerOptions, httpapi.WithNotificationSender(notificationSender))
+
 	db, err := store.Open(cfg.Database.Path)
 	if err != nil {
 		_ = closeFile(logFile)
@@ -285,7 +294,7 @@ func newRuntime(ctx context.Context, configPath string, consoleWriter io.Writer)
 		logger.Warnf("启动时自动停止 %d 个上次未结束 BWS 预约任务。", len(pausedBWSTasks))
 	}
 
-	httpRuntime := httpapi.NewRuntime(db, userauth.NewManager(24*time.Hour), logger, routerOptions...)
+	httpRuntime := httpapi.NewRuntime(db, userauth.NewManager(cfg.Auth.SessionTTL), logger, routerOptions...)
 	return &runtimeState{
 		cfg:        cfg,
 		logFile:    logFile,

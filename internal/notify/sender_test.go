@@ -80,3 +80,79 @@ func TestHTTPSenderBarkFullURL(t *testing.T) {
 		t.Fatalf("unexpected bark full url path: %s", gotPath)
 	}
 }
+
+func TestHTTPSenderQQ(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","retcode":0,"data":{"message_id":1}}`))
+	}))
+	defer server.Close()
+
+	sender := NewHTTPSender(server.Client())
+	sender.OneBotAPIURL = server.URL
+	sender.OneBotAccessToken = "onebot-secret"
+	err := sender.Send(context.Background(), model.Notification{
+		Provider: model.NotificationProviderQQ,
+		Config:   map[string]string{"qq": "123456789"},
+	}, "抢票成功", "请支付")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if gotPath != oneBotSendPrivateMsgPath {
+		t.Fatalf("path = %s, want %s", gotPath, oneBotSendPrivateMsgPath)
+	}
+	if gotAuth != "Bearer onebot-secret" {
+		t.Fatalf("Authorization = %q, want Bearer token", gotAuth)
+	}
+	if userID, _ := payload["user_id"].(float64); int64(userID) != 123456789 {
+		t.Fatalf("user_id = %v, want 123456789", payload["user_id"])
+	}
+	message, _ := payload["message"].(string)
+	if !strings.Contains(message, "抢票成功") || !strings.Contains(message, "请支付") {
+		t.Fatalf("unexpected message: %q", message)
+	}
+}
+
+func TestHTTPSenderQQRejectsBadResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"failed","retcode":100,"wording":"账号未登录"}`))
+	}))
+	defer server.Close()
+
+	sender := NewHTTPSender(server.Client())
+	sender.OneBotAPIURL = server.URL
+	err := sender.Send(context.Background(), model.Notification{
+		Provider: model.NotificationProviderQQ,
+		Config:   map[string]string{"qq": "123456789"},
+	}, "测试", "内容")
+	if err == nil || !strings.Contains(err.Error(), "账号未登录") {
+		t.Fatalf("Send err = %v, want OneBot error detail", err)
+	}
+}
+
+func TestHTTPSenderQQRequiresConfig(t *testing.T) {
+	sender := NewHTTPSender(nil)
+	err := sender.Send(context.Background(), model.Notification{
+		Provider: model.NotificationProviderQQ,
+		Config:   map[string]string{"qq": "123456789"},
+	}, "测试", "内容")
+	if err == nil {
+		t.Fatal("Send err = nil, want missing OneBot URL error")
+	}
+	err = sender.Send(context.Background(), model.Notification{
+		Provider: model.NotificationProviderQQ,
+		Config:   map[string]string{"qq": "not-a-qq"},
+	}, "测试", "内容")
+	if err == nil {
+		t.Fatal("Send err = nil, want invalid QQ error")
+	}
+}

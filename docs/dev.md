@@ -122,7 +122,7 @@ docker run --rm -it \
 http://127.0.0.1:8080/
 ```
 
-如果不挂载 `config.yaml`，程序会在容器内生成 `/app/config.yaml`，并在控制台输出面板密码。生产使用建议挂载配置文件：
+如果不挂载 `config.yaml`，程序会使用内置默认配置。生产使用建议挂载配置文件：
 
 ```bash
 docker run -d \
