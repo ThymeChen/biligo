@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fdcs99/biligo/internal/model"
@@ -36,6 +37,10 @@ type HTTPSender struct {
 	OneBotAPIURL string
 	// OneBotAccessToken 是 OneBot 服务端配置的 access_token，可留空。
 	OneBotAccessToken string
+
+	wsMu sync.Mutex
+	// oneBotWS 管理 OneBot WebSocket 连接；未启用时为 nil。
+	oneBotWS *oneBotWSManager
 }
 
 func NewHTTPSender(client *http.Client) *HTTPSender {
@@ -47,6 +52,53 @@ func NewHTTPSender(client *http.Client) *HTTPSender {
 		PushPlusURL: defaultPushPlusURL,
 		BarkBaseURL: defaultBarkBaseURL,
 	}
+}
+
+// EnableOneBotWS 启用 OneBot WebSocket。反向 WS 监听失败会返回错误，
+// 但已配置的正向 WS 仍会启动。
+func (s *HTTPSender) EnableOneBotWS(cfg OneBotWSConfig) error {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	if s.oneBotWS != nil {
+		return nil
+	}
+	manager, err := newOneBotWSManager(cfg)
+	if manager.forward != nil || manager.reverse != nil {
+		manager.start()
+		s.oneBotWS = manager
+	}
+	return err
+}
+
+func (s *HTTPSender) Close() {
+	if s == nil {
+		return
+	}
+	s.wsMu.Lock()
+	manager := s.oneBotWS
+	s.oneBotWS = nil
+	s.wsMu.Unlock()
+	if manager != nil {
+		manager.close()
+	}
+}
+
+// OneBotReverseWSAddr 返回反向 WS 实际监听地址，仅启用后非空。
+func (s *HTTPSender) OneBotReverseWSAddr() string {
+	manager := s.currentOneBotWS()
+	if manager == nil {
+		return ""
+	}
+	return manager.reverseAddr()
+}
+
+func (s *HTTPSender) currentOneBotWS() *oneBotWSManager {
+	if s == nil {
+		return nil
+	}
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	return s.oneBotWS
 }
 
 func (s *HTTPSender) Send(ctx context.Context, notification model.Notification, title string, content string) error {
@@ -105,13 +157,23 @@ func (s *HTTPSender) sendQQ(ctx context.Context, notification model.Notification
 	if !ok {
 		return errors.New("QQ 号不能为空或格式不正确")
 	}
+	message := title + "\n" + content
+	// WebSocket 已连接时优先使用 WS，避免与 HTTP 双发。
+	if ws := s.currentOneBotWS(); ws != nil {
+		if handled, err := ws.sendPrivateMessage(ctx, qq, message); handled {
+			return err
+		}
+	}
 	base := strings.TrimSpace(s.OneBotAPIURL)
 	if base == "" {
-		return errors.New("未配置 OneBot 服务地址，无法发送 QQ 通知")
+		if s.currentOneBotWS() != nil {
+			return errors.New("OneBot WebSocket 未连接且未配置 HTTP API，无法发送 QQ 通知")
+		}
+		return errors.New("未配置 OneBot HTTP API 或 WebSocket，无法发送 QQ 通知")
 	}
 	payload := map[string]any{
 		"user_id": qq,
-		"message": title + "\n" + content,
+		"message": message,
 	}
 	return s.postOneBot(ctx, strings.TrimRight(base, "/")+oneBotSendPrivateMsgPath, payload)
 }
@@ -140,12 +202,7 @@ func (s *HTTPSender) postOneBot(ctx context.Context, endpoint string, payload an
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("OneBot 接口返回 %d：%s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	var result struct {
-		Status  string `json:"status"`
-		Retcode int    `json:"retcode"`
-		Wording string `json:"wording"`
-		Msg     string `json:"msg"`
-	}
+	var result oneBotResponse
 	payloadBody := bytes.TrimSpace(data)
 	if len(payloadBody) == 0 {
 		// 部分实现成功时不返回响应体。
@@ -154,19 +211,39 @@ func (s *HTTPSender) postOneBot(ctx context.Context, endpoint string, payload an
 	if err := json.Unmarshal(payloadBody, &result); err != nil {
 		return fmt.Errorf("OneBot 响应无法解析：%s", truncateBody(payloadBody))
 	}
+	return checkOneBotResponse(result, payloadBody)
+}
+
+// oneBotResponse 是 OneBot v11 HTTP/WS 动作响应的公共结构。
+type oneBotResponse struct {
+	Status  string          `json:"status"`
+	Retcode int             `json:"retcode"`
+	Wording string          `json:"wording"`
+	Msg     string          `json:"msg"`
+	Data    json.RawMessage `json:"data"`
+	Echo    string          `json:"echo"`
+}
+
+func checkOneBotResponse(response oneBotResponse, raw []byte) error {
 	// retcode=0 表示成功；异步动作以 status=async、retcode=1 表示已受理。
-	success := result.Retcode == 0 || (result.Status == "async" && result.Retcode == 1)
-	if !success || (result.Status != "" && result.Status != "ok" && result.Status != "async") {
-		detail := strings.TrimSpace(result.Wording)
-		if detail == "" {
-			detail = strings.TrimSpace(result.Msg)
-		}
-		if detail == "" {
-			detail = truncateBody(payloadBody)
-		}
-		return fmt.Errorf("OneBot 返回错误（retcode=%d）：%s", result.Retcode, detail)
+	success := response.Retcode == 0 || (response.Status == "async" && response.Retcode == 1)
+	if success && (response.Status == "" || response.Status == "ok" || response.Status == "async") {
+		return nil
 	}
-	return nil
+	detail := strings.TrimSpace(response.Wording)
+	if detail == "" {
+		detail = strings.TrimSpace(response.Msg)
+	}
+	if detail == "" && len(raw) > 0 {
+		detail = truncateBody(raw)
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(response.Status)
+	}
+	if detail == "" {
+		detail = "未知错误"
+	}
+	return fmt.Errorf("OneBot 返回错误（retcode=%d）：%s", response.Retcode, detail)
 }
 
 func truncateBody(data []byte) string {

@@ -10,10 +10,17 @@ auth:
   session_ttl: "24h"
 
 onebot:
-  # OneBot v11 HTTP API 服务地址（例如 NapCat / Lagrange 的 HTTP 接口）。
-  # 留空则无法使用 QQ 类型通知。
-  api_url: ""
-  # OneBot 服务端的 access_token；未设置可留空。
+  # OneBot 连接方式开关：disabled / http / https / ws / wss / reverse_ws。
+  # http/https 使用 HTTP API；ws/wss 为后端主动连接的正向 WebSocket；
+  # reverse_ws 由后端监听，OneBot 主动连接（默认路径 /onebot/ws）。
+  mode: "disabled"
+  # http/https/ws/wss 模式为 OneBot 服务地址；reverse_ws 模式为后端监听地址。
+  # reverse_ws 的 host 可留空表示监听所有网卡。
+  host: "127.0.0.1"
+  port: 3000
+  # WebSocket 路径：ws/wss 模式默认 "/"，reverse_ws 模式默认 "/onebot/ws"。
+  ws_path: ""
+  # OneBot 服务端的 access_token（HTTP 与 WebSocket 共用）；未设置可留空。
   access_token: ""
 
 logging:

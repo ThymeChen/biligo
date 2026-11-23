@@ -3,14 +3,28 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-const defaultAuthSessionTTL = 24 * time.Hour
+const (
+	defaultAuthSessionTTL = 24 * time.Hour
+
+	defaultOneBotForwardWSPath = "/"
+	defaultOneBotReverseWSPath = "/onebot/ws"
+
+	OneBotModeDisabled  = "disabled"
+	OneBotModeHTTP      = "http"
+	OneBotModeHTTPS     = "https"
+	OneBotModeWS        = "ws"
+	OneBotModeWSS       = "wss"
+	OneBotModeReverseWS = "reverse_ws"
+)
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
@@ -35,10 +49,23 @@ type AuthConfig struct {
 	SessionTTL time.Duration `yaml:"session_ttl"`
 }
 
-// OneBotConfig 描述 OneBot v11 HTTP API 服务端的连接信息，用于向绑定的 QQ 号推送通知。
+// OneBotConfig 描述 OneBot v11 连接配置，用于向绑定的 QQ 号推送通知。
 type OneBotConfig struct {
-	APIURL      string `yaml:"api_url"`
+	// Mode 是连接方式开关：disabled、http、https、ws、wss、reverse_ws。
+	Mode string `yaml:"mode"`
+	// Host 和 Port 是 OneBot 服务地址；reverse_ws 模式下为监听地址，Host 可留空。
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	// WSPath 是 WebSocket 路径；ws/wss 默认 "/"，reverse_ws 默认 "/onebot/ws"。
+	WSPath string `yaml:"ws_path"`
+	// AccessToken 用于 HTTP 与 WebSocket 鉴权。
 	AccessToken string `yaml:"access_token"`
+
+	// URL 是 http/https/ws/wss 模式拼接出的完整地址。
+	URL string `yaml:"-"`
+	// ReverseAddr 和 ReversePath 是 reverse_ws 模式的监听地址与路径。
+	ReverseAddr string `yaml:"-"`
+	ReversePath string `yaml:"-"`
 }
 
 type LoggingConfig struct {
@@ -64,6 +91,9 @@ func Load(path string) (Config, error) {
 		},
 		Auth: AuthConfig{
 			SessionTTL: defaultAuthSessionTTL,
+		},
+		OneBot: OneBotConfig{
+			Mode: OneBotModeDisabled,
 		},
 		Logging: LoggingConfig{
 			Levels: LogLevels{"info", "warn", "error"},
@@ -113,14 +143,65 @@ func Load(path string) (Config, error) {
 	if color := strings.TrimSpace(os.Getenv("BILIGO_LOG_COLOR")); color != "" {
 		cfg.Logging.Color = normalizeLogColor(color)
 	}
-	if oneBotURL := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_URL")); oneBotURL != "" {
-		cfg.OneBot.APIURL = oneBotURL
+	if oneBotMode := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_MODE")); oneBotMode != "" {
+		cfg.OneBot.Mode = oneBotMode
+	}
+	if oneBotHost := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_HOST")); oneBotHost != "" {
+		cfg.OneBot.Host = oneBotHost
+	}
+	if oneBotPort := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_PORT")); oneBotPort != "" {
+		parsed, err := strconv.Atoi(oneBotPort)
+		if err != nil {
+			return Config{}, fmt.Errorf("BILIGO_ONEBOT_PORT 必须是整数")
+		}
+		cfg.OneBot.Port = parsed
+	}
+	if oneBotWSPath := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_WS_PATH")); oneBotWSPath != "" {
+		cfg.OneBot.WSPath = oneBotWSPath
 	}
 	if oneBotToken := strings.TrimSpace(os.Getenv("BILIGO_ONEBOT_TOKEN")); oneBotToken != "" {
 		cfg.OneBot.AccessToken = oneBotToken
 	}
-	cfg.OneBot.APIURL = strings.TrimRight(strings.TrimSpace(cfg.OneBot.APIURL), "/")
 	cfg.OneBot.AccessToken = strings.TrimSpace(cfg.OneBot.AccessToken)
+	cfg.OneBot.Host = strings.Trim(strings.TrimSpace(cfg.OneBot.Host), "[]")
+	cfg.OneBot.WSPath = strings.TrimSpace(cfg.OneBot.WSPath)
+
+	mode := normalizeOneBotMode(cfg.OneBot.Mode)
+	if mode == "" {
+		return Config{}, fmt.Errorf("onebot.mode 必须是 disabled、http、https、ws、wss 或 reverse_ws")
+	}
+	cfg.OneBot.Mode = mode
+	if mode != OneBotModeDisabled {
+		if cfg.OneBot.Port <= 0 || cfg.OneBot.Port > 65535 {
+			return Config{}, fmt.Errorf("onebot.port 必须在 1-65535 之间")
+		}
+		if _, _, err := net.SplitHostPort(cfg.OneBot.Host); err == nil {
+			return Config{}, fmt.Errorf("onebot.host 不应包含端口，请使用 onebot.port")
+		}
+		if strings.Contains(cfg.OneBot.Host, "/") {
+			return Config{}, fmt.Errorf("onebot.host 只填写主机名或 IP，不要包含协议或路径")
+		}
+		if mode != OneBotModeReverseWS && cfg.OneBot.Host == "" {
+			return Config{}, fmt.Errorf("onebot.host 不能为空（%s 模式）", mode)
+		}
+		address := net.JoinHostPort(cfg.OneBot.Host, strconv.Itoa(cfg.OneBot.Port))
+		switch mode {
+		case OneBotModeHTTP:
+			cfg.OneBot.URL = "http://" + address
+		case OneBotModeHTTPS:
+			cfg.OneBot.URL = "https://" + address
+		case OneBotModeWS:
+			cfg.OneBot.WSPath = normalizeOneBotWSPath(cfg.OneBot.WSPath, false)
+			cfg.OneBot.URL = "ws://" + address + strings.TrimRight(cfg.OneBot.WSPath, "/")
+		case OneBotModeWSS:
+			cfg.OneBot.WSPath = normalizeOneBotWSPath(cfg.OneBot.WSPath, false)
+			cfg.OneBot.URL = "wss://" + address + strings.TrimRight(cfg.OneBot.WSPath, "/")
+		case OneBotModeReverseWS:
+			cfg.OneBot.WSPath = normalizeOneBotWSPath(cfg.OneBot.WSPath, true)
+			cfg.OneBot.ReverseAddr = address
+			cfg.OneBot.ReversePath = cfg.OneBot.WSPath
+		}
+	}
 
 	if ttl := strings.TrimSpace(os.Getenv("BILIGO_AUTH_TTL")); ttl != "" {
 		parsed, err := time.ParseDuration(ttl)
@@ -134,6 +215,39 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func normalizeOneBotMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "off", "none", "disabled":
+		return OneBotModeDisabled
+	case OneBotModeHTTP:
+		return OneBotModeHTTP
+	case OneBotModeHTTPS:
+		return OneBotModeHTTPS
+	case "ws", "forward", "forward_ws":
+		return OneBotModeWS
+	case OneBotModeWSS:
+		return OneBotModeWSS
+	case "reverse", "reverse_ws":
+		return OneBotModeReverseWS
+	default:
+		return ""
+	}
+}
+
+func normalizeOneBotWSPath(raw string, reverse bool) string {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		if reverse {
+			return defaultOneBotReverseWSPath
+		}
+		return defaultOneBotForwardWSPath
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
 }
 
 func (levels *LogLevels) UnmarshalYAML(value *yaml.Node) error {

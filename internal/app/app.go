@@ -56,6 +56,8 @@ type runtimeState struct {
 	server     *http.Server
 	listener   net.Listener
 	serverDone chan error
+
+	notificationSender *notify.HTTPSender
 }
 
 func New(configPath string) *App {
@@ -262,11 +264,7 @@ func newRuntime(ctx context.Context, configPath string, consoleWriter io.Writer)
 
 	// 用配置文件中的 OneBot 连接信息构造通知发送器，供 QQ 类型通知使用。
 	notificationSender := notify.NewHTTPSender(nil)
-	notificationSender.OneBotAPIURL = cfg.OneBot.APIURL
 	notificationSender.OneBotAccessToken = cfg.OneBot.AccessToken
-	if cfg.OneBot.APIURL == "" {
-		logger.Warnf("未配置 onebot.api_url，QQ 类型通知将无法发送。")
-	}
 	routerOptions = append(routerOptions, httpapi.WithNotificationSender(notificationSender))
 
 	db, err := store.Open(cfg.Database.Path)
@@ -294,16 +292,48 @@ func newRuntime(ctx context.Context, configPath string, consoleWriter io.Writer)
 		logger.Warnf("启动时自动停止 %d 个上次未结束 BWS 预约任务。", len(pausedBWSTasks))
 	}
 
+	switch cfg.OneBot.Mode {
+	case config.OneBotModeHTTP, config.OneBotModeHTTPS:
+		notificationSender.OneBotAPIURL = cfg.OneBot.URL
+		logger.Infof("OneBot 使用 HTTP API：%s。", cfg.OneBot.URL)
+	case config.OneBotModeWS, config.OneBotModeWSS:
+		if err := notificationSender.EnableOneBotWS(notify.OneBotWSConfig{
+			ForwardURL:  cfg.OneBot.URL,
+			AccessToken: cfg.OneBot.AccessToken,
+		}); err != nil {
+			logger.Warnf("OneBot 正向 WebSocket 启动失败：%v", err)
+		} else {
+			logger.Infof("OneBot 正向 WebSocket 已启用：%s。", cfg.OneBot.URL)
+		}
+	case config.OneBotModeReverseWS:
+		if err := notificationSender.EnableOneBotWS(notify.OneBotWSConfig{
+			ReverseEnabled: true,
+			ReverseAddr:    cfg.OneBot.ReverseAddr,
+			ReversePath:    cfg.OneBot.ReversePath,
+			AccessToken:    cfg.OneBot.AccessToken,
+		}); err != nil {
+			logger.Warnf("OneBot 反向 WebSocket 启动失败：%v", err)
+		} else {
+			logger.Infof("OneBot 反向 WebSocket 监听 %s%s。", notificationSender.OneBotReverseWSAddr(), cfg.OneBot.ReversePath)
+			if cfg.OneBot.AccessToken == "" {
+				logger.Warnf("OneBot 反向 WebSocket 未配置 access_token，仅接受不带 Origin 的连接。")
+			}
+		}
+	case config.OneBotModeDisabled:
+		logger.Infof("OneBot QQ 通知未启用。")
+	}
+
 	httpRuntime := httpapi.NewRuntime(db, userauth.NewManager(cfg.Auth.SessionTTL), logger, routerOptions...)
 	return &runtimeState{
-		cfg:        cfg,
-		logFile:    logFile,
-		logger:     logger,
-		store:      db,
-		runner:     httpRuntime.Runner,
-		bwsRunner:  httpRuntime.BWSRunner,
-		server:     &http.Server{Handler: httpRuntime.Router},
-		serverDone: make(chan error, 1),
+		cfg:                cfg,
+		logFile:            logFile,
+		logger:             logger,
+		store:              db,
+		runner:             httpRuntime.Runner,
+		bwsRunner:          httpRuntime.BWSRunner,
+		server:             &http.Server{Handler: httpRuntime.Router},
+		serverDone:         make(chan error, 1),
+		notificationSender: notificationSender,
 	}, nil
 }
 
@@ -354,6 +384,10 @@ func (r *runtimeState) stop(ctx context.Context) error {
 
 func (r *runtimeState) close() error {
 	var result error
+	if r.notificationSender != nil {
+		r.notificationSender.Close()
+		r.notificationSender = nil
+	}
 	if r.store != nil {
 		if err := r.store.Close(); err != nil {
 			result = err

@@ -54,6 +54,13 @@ database:
 auth:
   session_ttl: "24h"
 
+onebot:
+  mode: "disabled"
+  host: "127.0.0.1"
+  port: 3000
+  ws_path: ""
+  access_token: ""
+
 logging:
   levels:
     - info
@@ -68,6 +75,10 @@ logging:
 - `server.addr`：服务监听地址和端口，默认 `:8080`。
 - `database.path`：本地 SQLite 数据库路径，默认 `data/biligo.db`。
 - `auth.session_ttl`：扫码登录后的 Token 有效期，使用 Go duration 格式（如 `30m`、`24h`），默认 `24h`。
+- `onebot.mode`：OneBot 连接开关，可选 `disabled`、`http`、`https`、`ws`、`wss`、`reverse_ws`。
+- `onebot.host` / `onebot.port`：OneBot 服务地址；`reverse_ws` 模式下为后端监听地址（`host` 可留空）。
+- `onebot.ws_path`：WebSocket 路径，`ws`/`wss` 默认 `/`，`reverse_ws` 默认 `/onebot/ws`。
+- `onebot.access_token`：OneBot 鉴权 Token，HTTP 与 WebSocket 共用。
 - `logging.file.enabled`：是否写入日志文件。
 
 ### 3. 启动程序
@@ -230,6 +241,10 @@ docker run -d \
 
 - `BILIGO_ADDR`：监听地址，例如 `:8080`。
 - `BILIGO_AUTH_TTL`：扫码登录 Token 有效期，例如 `24h`。
+- `BILIGO_ONEBOT_MODE`：OneBot 连接模式，例如 `http`、`https`、`ws`、`wss`、`reverse_ws`。
+- `BILIGO_ONEBOT_HOST` / `BILIGO_ONEBOT_PORT`：对应模式的 OneBot 主机和端口。
+- `BILIGO_ONEBOT_WS_PATH`：WebSocket 路径。
+- `BILIGO_ONEBOT_TOKEN`：OneBot access_token。
 - `BILIGO_DB`：数据库路径，例如 `/app/data/biligo.db`。
 - `BILIGO_LOG_LEVELS`：日志等级，例如 `info,warn,error`，设置为 `none` 可关闭输出。
 - `BILIGO_LOG_COLOR`：控制台颜色，支持 `auto`、`always`、`never`。

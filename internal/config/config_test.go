@@ -72,6 +72,200 @@ func TestLoadAuthSessionTTL(t *testing.T) {
 	}
 }
 
+func TestLoadOneBotConfig(t *testing.T) {
+	t.Setenv("BILIGO_CONFIG", "")
+	t.Setenv("BILIGO_ONEBOT_MODE", "")
+	t.Setenv("BILIGO_ONEBOT_HOST", "")
+	t.Setenv("BILIGO_ONEBOT_PORT", "")
+	t.Setenv("BILIGO_ONEBOT_WS_PATH", "")
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load defaults: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeDisabled {
+		t.Fatalf("OneBot.Mode = %q, want disabled", cfg.OneBot.Mode)
+	}
+
+	write(`
+onebot:
+  mode: "http"
+  host: "127.0.0.1"
+  port: 3000
+  access_token: "secret"
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load http mode: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeHTTP || cfg.OneBot.URL != "http://127.0.0.1:3000" || cfg.OneBot.AccessToken != "secret" {
+		t.Fatalf("unexpected http mode config: %#v", cfg.OneBot)
+	}
+
+	write(`
+onebot:
+  mode: "https"
+  host: "onebot.example.com"
+  port: 443
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load https mode: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeHTTPS || cfg.OneBot.URL != "https://onebot.example.com:443" {
+		t.Fatalf("unexpected https mode config: %#v", cfg.OneBot)
+	}
+
+	write(`
+onebot:
+  mode: "ws"
+  host: "127.0.0.1"
+  port: 3001
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load ws mode: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeWS || cfg.OneBot.URL != "ws://127.0.0.1:3001" {
+		t.Fatalf("unexpected ws mode config: %#v", cfg.OneBot)
+	}
+	if cfg.OneBot.WSPath != "/" {
+		t.Fatalf("OneBot.WSPath = %q, want /", cfg.OneBot.WSPath)
+	}
+
+	write(`
+onebot:
+  mode: "ws"
+  host: "127.0.0.1"
+  port: 3001
+  ws_path: "onebot/v11"
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load ws custom path: %v", err)
+	}
+	if cfg.OneBot.WSPath != "/onebot/v11" || cfg.OneBot.URL != "ws://127.0.0.1:3001/onebot/v11" {
+		t.Fatalf("unexpected ws custom path config: %#v", cfg.OneBot)
+	}
+
+	write(`
+onebot:
+  mode: "wss"
+  host: "example.com"
+  port: 443
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load wss mode: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeWSS || cfg.OneBot.URL != "wss://example.com:443" {
+		t.Fatalf("unexpected wss mode config: %#v", cfg.OneBot)
+	}
+
+	write(`
+onebot:
+  mode: "reverse_ws"
+  host: ""
+  port: 8090
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load reverse ws mode: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeReverseWS || cfg.OneBot.ReverseAddr != ":8090" || cfg.OneBot.ReversePath != "/onebot/ws" {
+		t.Fatalf("unexpected reverse ws config: %#v", cfg.OneBot)
+	}
+
+	write(`
+onebot:
+  mode: "reverse_ws"
+  host: "127.0.0.1"
+  port: 8091
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load reverse ws with host: %v", err)
+	}
+	if cfg.OneBot.ReverseAddr != "127.0.0.1:8091" || cfg.OneBot.ReversePath != "/onebot/ws" {
+		t.Fatalf("unexpected reverse ws host config: %#v", cfg.OneBot)
+	}
+
+	write(`
+onebot:
+  mode: "reverse_ws"
+  host: "127.0.0.1"
+  port: 8092
+  ws_path: "custom/ws"
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load reverse ws custom path: %v", err)
+	}
+	if cfg.OneBot.ReverseAddr != "127.0.0.1:8092" || cfg.OneBot.ReversePath != "/custom/ws" || cfg.OneBot.WSPath != "/custom/ws" {
+		t.Fatalf("unexpected reverse ws custom path: %#v", cfg.OneBot)
+	}
+
+	t.Setenv("BILIGO_ONEBOT_MODE", "wss")
+	t.Setenv("BILIGO_ONEBOT_HOST", "env.example.com")
+	t.Setenv("BILIGO_ONEBOT_PORT", "9443")
+	t.Setenv("BILIGO_ONEBOT_WS_PATH", "/env/ws")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load env override: %v", err)
+	}
+	if cfg.OneBot.Mode != OneBotModeWSS || cfg.OneBot.URL != "wss://env.example.com:9443/env/ws" {
+		t.Fatalf("unexpected env override: %#v", cfg.OneBot)
+	}
+
+	t.Setenv("BILIGO_ONEBOT_MODE", "")
+	t.Setenv("BILIGO_ONEBOT_HOST", "")
+	t.Setenv("BILIGO_ONEBOT_PORT", "")
+	t.Setenv("BILIGO_ONEBOT_WS_PATH", "")
+	write("onebot:\n  mode: \"unknown\"\n  port: 3000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with unknown mode should fail")
+	}
+
+	write("onebot:\n  mode: \"http\"\n  host: \"127.0.0.1\"\n  port: 0\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with invalid port should fail")
+	}
+
+	write("onebot:\n  mode: \"http\"\n  host: \"127.0.0.1:3000\"\n  port: 3000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with port in host should fail")
+	}
+
+	write("onebot:\n  mode: \"http\"\n  host: \"http://127.0.0.1\"\n  port: 3000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with scheme in host should fail")
+	}
+
+	write("onebot:\n  mode: \"http\"\n  host: \"\"\n  port: 3000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load http without host should fail")
+	}
+
+	write("onebot:\n  mode: \"ws\"\n  host: \"127.0.0.1\"\n  port: 70000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with out-of-range port should fail")
+	}
+
+	t.Setenv("BILIGO_ONEBOT_PORT", "not-a-port")
+	write("onebot:\n  mode: \"http\"\n  host: \"127.0.0.1\"\n  port: 3000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with invalid env port should fail")
+	}
+}
+
 func TestLoadLogLevelsFromConfigAndEnv(t *testing.T) {
 	t.Setenv("BILIGO_CONFIG", "")
 	t.Setenv("BILIGO_LOG_LEVELS", "")

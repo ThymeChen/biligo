@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fdcs99/biligo/internal/model"
+	"github.com/gorilla/websocket"
 )
 
 func TestHTTPSenderPushPlus(t *testing.T) {
@@ -154,5 +156,167 @@ func TestHTTPSenderQQRequiresConfig(t *testing.T) {
 	}, "测试", "内容")
 	if err == nil {
 		t.Fatal("Send err = nil, want invalid QQ error")
+	}
+}
+
+type oneBotWSAction struct {
+	Action string `json:"action"`
+	Params struct {
+		UserID  int64  `json:"user_id"`
+		Message string `json:"message"`
+	} `json:"params"`
+	Echo string `json:"echo"`
+}
+
+func waitForCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met before timeout")
+}
+
+func TestHTTPSenderQQForwardWebSocket(t *testing.T) {
+	actionCh := make(chan oneBotWSAction, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer ws-secret" {
+			t.Errorf("Authorization = %q, want Bearer ws-secret", got)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var action oneBotWSAction
+		if err := conn.ReadJSON(&action); err != nil {
+			return
+		}
+		actionCh <- action
+		_ = conn.WriteJSON(map[string]any{
+			"status":  "ok",
+			"retcode": 0,
+			"echo":    action.Echo,
+			"data":    map[string]any{"message_id": 1},
+		})
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	sender := NewHTTPSender(server.Client())
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	if err := sender.EnableOneBotWS(OneBotWSConfig{ForwardURL: wsURL, AccessToken: "ws-secret"}); err != nil {
+		t.Fatalf("EnableOneBotWS: %v", err)
+	}
+	defer sender.Close()
+	waitForCondition(t, func() bool { return sender.oneBotWS.forward.current() != nil })
+
+	err := sender.Send(context.Background(), model.Notification{
+		Provider: model.NotificationProviderQQ,
+		Config:   map[string]string{"qq": "123456789"},
+	}, "抢票成功", "请支付")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case action := <-actionCh:
+		if action.Action != "send_private_msg" || action.Params.UserID != 123456789 {
+			t.Fatalf("unexpected action: %#v", action)
+		}
+		if !strings.Contains(action.Params.Message, "抢票成功") || !strings.Contains(action.Params.Message, "请支付") {
+			t.Fatalf("unexpected message: %q", action.Params.Message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for WebSocket action")
+	}
+}
+
+func TestHTTPSenderQQReverseWebSocket(t *testing.T) {
+	sender := NewHTTPSender(nil)
+	if err := sender.EnableOneBotWS(OneBotWSConfig{
+		ReverseEnabled: true,
+		ReverseAddr:    "127.0.0.1:0",
+		ReversePath:    "/onebot/ws",
+		AccessToken:    "reverse-secret",
+	}); err != nil {
+		t.Fatalf("EnableOneBotWS: %v", err)
+	}
+	defer sender.Close()
+	addr := sender.OneBotReverseWSAddr()
+	if addr == "" {
+		t.Fatal("reverse WebSocket address is empty")
+	}
+
+	headers := http.Header{"Authorization": []string{"Bearer reverse-secret"}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/onebot/ws", headers)
+	if err != nil {
+		t.Fatalf("Dial reverse WebSocket: %v", err)
+	}
+	defer conn.Close()
+	waitForCondition(t, func() bool { return sender.oneBotWS.reverse.active() != nil })
+
+	actionCh := make(chan oneBotWSAction, 1)
+	go func() {
+		var action oneBotWSAction
+		if err := conn.ReadJSON(&action); err != nil {
+			return
+		}
+		actionCh <- action
+		_ = conn.WriteJSON(map[string]any{
+			"status":  "ok",
+			"retcode": 0,
+			"echo":    action.Echo,
+			"data":    map[string]any{"message_id": 2},
+		})
+	}()
+
+	err = sender.Send(context.Background(), model.Notification{
+		Provider: model.NotificationProviderQQ,
+		Config:   map[string]string{"qq": "987654321"},
+	}, "Biligo 通知测试", "反向 WS 测试")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case action := <-actionCh:
+		if action.Action != "send_private_msg" || action.Params.UserID != 987654321 {
+			t.Fatalf("unexpected action: %#v", action)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for reverse WebSocket action")
+	}
+}
+
+func TestHTTPSenderQQReverseWebSocketRejectsBadToken(t *testing.T) {
+	sender := NewHTTPSender(nil)
+	if err := sender.EnableOneBotWS(OneBotWSConfig{
+		ReverseEnabled: true,
+		ReverseAddr:    "127.0.0.1:0",
+		ReversePath:    "/onebot/ws",
+		AccessToken:    "reverse-secret",
+	}); err != nil {
+		t.Fatalf("EnableOneBotWS: %v", err)
+	}
+	defer sender.Close()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://"+sender.OneBotReverseWSAddr()+"/onebot/ws", http.Header{
+		"Authorization": []string{"Bearer wrong-token"},
+	})
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("Dial with wrong token should fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("response = %#v, want 401", resp)
 	}
 }

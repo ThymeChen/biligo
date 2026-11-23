@@ -1246,7 +1246,7 @@ BWS 预约功能使用独立任务表和日志表，不复用会员购抢票 `ta
 
 `provider=bark` 时，`config.token` 可以填写 Bark Token，也可以填写完整自建推送地址。
 
-`provider=qq` 时，`config.qq` 填写要绑定的 QQ 号。后端会通过配置文件中的 `onebot.api_url`（OneBot v11 HTTP API 服务地址）向该 QQ 号发送私聊消息；`onebot.access_token` 用于需要鉴权的服务端。
+`provider=qq` 时，`config.qq` 填写要绑定的 QQ 号。后端通过 `onebot.mode` 选择 OneBot 连接方式：`http`/`https` 使用 HTTP API，`ws`/`wss` 为后端主动连接的正向 WebSocket，`reverse_ws` 由后端监听、OneBot 主动连接；`onebot.host` 和 `onebot.port` 为服务地址（`reverse_ws` 时为监听地址），`onebot.ws_path` 为 WebSocket 路径（`ws`/`wss` 默认 `/`，`reverse_ws` 默认 `/onebot/ws`），`onebot.access_token` 用于 HTTP 与 WebSocket 鉴权。
 
 响应：`201 Created`，返回通知对象。
 
